@@ -272,6 +272,12 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
 
+      case 'publishDrafts': {
+        await vscode.commands.executeCommand('markdownReview.publishDrafts');
+        await this.update();
+        break;
+      }
+
       case 'editComment': {
         const threadId = msg.threadId as string;
         const commentId = msg.commentId as string;
@@ -419,7 +425,10 @@ ${PREVIEW_CSS}
     </div>
     <div id="resize-handle" title="Drag to resize sidebar"></div>
     <div id="sidebar">
-      <div class="sidebar-header">Comments</div>
+      <div class="sidebar-header">
+        <span>Comments</span>
+        <button id="publish-btn" class="publish-btn" style="display:none" title="Publish draft comments as PR">Publish</button>
+      </div>
       <div id="sidebar-content"></div>
       <div id="sidebar-stats"></div>
     </div>
@@ -531,6 +540,27 @@ body.resizing {
   font-size: 14px;
   flex-shrink: 0;
   color: var(--vscode-foreground);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.publish-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+}
+.publish-btn:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+.publish-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 #sidebar-content {
@@ -1295,6 +1325,31 @@ const PREVIEW_JS = /* js */ `
   });
 
   updateEmptyState();
+
+  // ── publish button ─────────────────────────
+  (function renderPublishButton() {
+    const btn = document.getElementById('publish-btn');
+    if (!btn) { return; }
+    let draftCount = 0;
+    for (const slug in commentsBySlug) {
+      const threads = commentsBySlug[slug];
+      if (!threads) { continue; }
+      for (const t of threads) {
+        if (t.thread.isDraft) { draftCount++; }
+      }
+    }
+    if (draftCount > 0) {
+      btn.style.display = '';
+      btn.textContent = 'Publish ' + draftCount + ' draft' + (draftCount > 1 ? 's' : '');
+    } else {
+      btn.style.display = 'none';
+    }
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.textContent = 'Publishing\u2026';
+      vscode.postMessage({ command: 'publishDrafts' });
+    });
+  })();
 
   // ── statistics chart ───────────────────────
   (function renderStats() {

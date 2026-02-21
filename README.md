@@ -18,7 +18,9 @@ Add threaded review comments to any markdown file in your Git repository — rig
 1. Right-click any `.md` file in the Explorer → **"Markdown: Review and Comment"**
 2. The preview panel opens beside your editor with a comment sidebar
 3. Click **Add Comment** on any section heading to start a thread
-4. When ready, run **"Publish Pending Comments as PR"** from the command palette or status bar
+4. When ready, click the **Publish** button in the sidebar header, or run **"Publish Pending Comments as PR"** from the command palette
+
+The publish button appears automatically in the comment sidebar when you have draft comments, showing the count (e.g. "Publish 3 drafts"). It is hidden when there are no drafts to publish.
 
 Comments are stored in a `.comments.json` sidecar file next to each document:
 
