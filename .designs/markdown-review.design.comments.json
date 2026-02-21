@@ -9,7 +9,7 @@
         "lineHint": 0
       },
       "status": "open",
-      "isDraft": true,
+      "isDraft": false,
       "thread": [
         {
           "id": "44d5b317-81fb-4d40-a820-1519fac9c8b2",
@@ -28,7 +28,7 @@
         "lineHint": 0
       },
       "status": "open",
-      "isDraft": true,
+      "isDraft": false,
       "thread": [
         {
           "id": "80f1aabc-3a87-4320-80c3-54ce8fb520d6",
@@ -39,6 +39,25 @@
         }
       ],
       "id": "61814692-725d-4966-91dc-7fed399ecef0"
+    },
+    {
+      "anchor": {
+        "sectionSlug": "overview",
+        "contentHash": "d31825c8c7b89397",
+        "lineHint": 2
+      },
+      "status": "open",
+      "isDraft": false,
+      "thread": [
+        {
+          "id": "7eb49134-0fc3-42f5-a00f-3efc694d7113",
+          "author": "Dave Harding",
+          "body": "fdsfd",
+          "created": "2026-02-21T23:49:26.347Z",
+          "edited": null
+        }
+      ],
+      "id": "017dedbe-840c-463d-bb1d-ee2a8b187cfe"
     }
   ]
 }
