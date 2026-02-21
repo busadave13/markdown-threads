@@ -12,15 +12,12 @@ export async function activate(context: vscode.ExtensionContext) {
   console.log('[MarkdownReview] Extension activating...');
   console.log('[MarkdownReview] Workspace folders:', vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath));
 
-  // Initialize git service
-  await gitService.initialize();
-
   // Create status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'markdownReview.publishDrafts';
   context.subscriptions.push(statusBarItem);
 
-  // Register commands
+  // Register commands FIRST so they are available even if git init fails
   context.subscriptions.push(
     vscode.commands.registerCommand('markdownReview.publishDrafts', handlePublishDrafts),
     vscode.commands.registerCommand('markdownReview.openPreview', async (uri?: vscode.Uri) => {
@@ -64,6 +61,13 @@ export async function activate(context: vscode.ExtensionContext) {
       await updateStatusBar();
     })
   );
+
+  // Initialize git service (after commands are registered to avoid blocking activation)
+  try {
+    await gitService.initialize();
+  } catch (err) {
+    console.error('[MarkdownReview] Git initialization failed:', err);
+  }
 
   // Update status bar for current editor
   await updateStatusBar();

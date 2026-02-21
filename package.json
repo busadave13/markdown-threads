@@ -2,7 +2,7 @@
   "name": "markdown-review",
   "displayName": "Markdown Review",
   "description": "Inline feedback and comments on markdown files stored in Git, with automatic PR creation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "busa-dave-13",
   "license": "LGPL-2.1",
   "icon": "media/markdown-review-icon.png",
@@ -18,7 +18,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:markdown"
+    "onLanguage:markdown",
+    "onCommand:markdownReview.openPreview",
+    "onCommand:markdownReview.publishDrafts"
   ],
   "main": "./out/extension.js",
   "contributes": {

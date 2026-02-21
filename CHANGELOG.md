@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+- **Publish button in sidebar** — Draft comment count and one-click publish button now appears in the preview sidebar header
+- **Activation fix** — Extension now activates reliably when invoked from the Explorer context menu or command palette
+- **Dependency packaging fix** — Runtime dependencies are now correctly included in the `.vsix` package
+- **License correction** — Updated references from MIT to LGPL-2.1
+- **Repository URL fix** — Corrected repository references from `markdown-discussions` to `markdown-review`
+
 ## 0.1.0 — Initial Release
 
 - **Preview-only commenting** — WebView sidebar for adding threaded comments to any markdown file

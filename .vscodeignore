@@ -8,5 +8,12 @@ tsconfig.json
 .eslintrc*
 **/*.ts
 **/*.map
-node_modules/**
 out/test/**
+node_modules/@types/**
+node_modules/@typescript-eslint/**
+node_modules/@vscode/test-electron/**
+node_modules/@vscode/vsce/**
+node_modules/eslint/**
+node_modules/mocha/**
+node_modules/typescript/**
+node_modules/glob/**
