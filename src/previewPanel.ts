@@ -5,6 +5,8 @@ import { sidecarManager } from './sidecarManager';
 import type { SidecarChangeEvent } from './sidecarManager';
 import { anchorEngine } from './anchorEngine';
 import { gitService } from './gitService';
+import { gitHubProvider } from './providers/githubProvider';
+import { adoProvider } from './providers/adoProvider';
 import { slugify } from './utils/hash';
 import type { CommentThread as AppCommentThread } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
@@ -273,7 +275,7 @@ export class PreviewPanel implements vscode.Disposable {
       }
 
       case 'publishDrafts': {
-        await vscode.commands.executeCommand('markdownReview.publishDrafts');
+        await this.handlePublishFromPreview();
         await this.update();
         break;
       }
@@ -441,6 +443,92 @@ ${PREVIEW_JS}
   </script>
 </body>
 </html>`;
+  }
+
+  // ───────────────── publish from preview ─────────────────
+
+  private async handlePublishFromPreview(): Promise<void> {
+    const docPath = this.document.uri.fsPath;
+    const sidecar = await sidecarManager.readSidecar(docPath);
+
+    if (!sidecar) {
+      vscode.window.showInformationMessage('No comments to publish');
+      return;
+    }
+
+    const draftThreads = sidecarManager.getDraftThreads(sidecar);
+    if (draftThreads.length === 0) {
+      vscode.window.showInformationMessage('No draft comments to publish');
+      return;
+    }
+
+    const config = vscode.workspace.getConfiguration('markdownReview');
+    const defaultProvider = config.get<string>('defaultProvider', 'auto');
+
+    let providerInfo = await gitService.detectProvider();
+    if (defaultProvider !== 'auto' && providerInfo) {
+      providerInfo = { ...providerInfo, provider: defaultProvider as 'github' | 'azuredevops' };
+    }
+
+    if (!providerInfo) {
+      vscode.window.showErrorMessage('Could not detect git provider. Make sure you have a remote configured.');
+      return;
+    }
+
+    const docName = path.basename(docPath);
+    const currentBranch = await gitService.getCurrentBranch();
+    const branchName = await gitService.createCommentBranch(docName);
+
+    if (!branchName) {
+      vscode.window.showErrorMessage('Failed to create branch for comments');
+      return;
+    }
+
+    sidecarManager.markAllPublished(sidecar);
+    await sidecarManager.writeSidecar(docPath, sidecar, 'internal');
+
+    const sidecarPath = sidecarManager.getSidecarPath(docPath);
+    const committed = await gitService.commitSidecarChanges(sidecarPath, docName);
+
+    if (!committed) {
+      vscode.window.showErrorMessage('Failed to commit changes');
+      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
+      return;
+    }
+
+    const pushed = await gitService.pushBranch(branchName);
+    if (!pushed) {
+      vscode.window.showErrorMessage('Failed to push branch');
+      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
+      return;
+    }
+
+    const baseBranch = await gitService.getDefaultBranch();
+    const title = `Feedback on ${docName}`;
+    const body = `This PR contains ${draftThreads.length} comment thread(s) on ${docName}.\n\nCreated by Markdown Review extension.`;
+
+    let result;
+    if (providerInfo.provider === 'github') {
+      result = await gitHubProvider.createPullRequest(providerInfo, branchName, baseBranch, title, body);
+    } else if (providerInfo.provider === 'azuredevops') {
+      result = await adoProvider.createPullRequest(providerInfo, branchName, baseBranch, title, body);
+    } else {
+      vscode.window.showErrorMessage('Unsupported git provider');
+      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
+      return;
+    }
+
+    if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
+
+    if (result.success && result.prUrl) {
+      const autoOpen = config.get<boolean>('autoOpenPR', true);
+      if (autoOpen) {
+        vscode.env.openExternal(vscode.Uri.parse(result.prUrl));
+      }
+      vscode.window.showInformationMessage(`PR created: ${result.prUrl}`);
+    } else {
+      vscode.window.showErrorMessage(`Failed to create PR: ${result.error}`);
+    }
   }
 
   // ───────────────── dispose ─────────────────
