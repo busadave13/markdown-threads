@@ -1,0 +1,112 @@
+{
+  "name": "markdown-review",
+  "displayName": "Markdown Review",
+  "description": "Inline feedback and comments on markdown files stored in Git, with automatic PR creation",
+  "version": "0.1.0",
+  "publisher": "busa-dave-13",
+  "license": "MIT",
+  "icon": "media/markdown-review-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/busadave13/markdown-discussions"
+  },
+  "keywords": ["markdown", "review", "comments", "feedback", "pull request"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "markdownReview.publishDrafts",
+        "title": "Publish Pending Comments as PR",
+        "category": "Markdown Review"
+      },
+      {
+        "command": "markdownReview.openPreview",
+        "title": "Markdown: Review and Comment",
+        "category": "Markdown Review",
+        "icon": "$(open-preview)"
+      }
+    ],
+    "configuration": {
+      "title": "Markdown Review",
+      "properties": {
+        "markdownReview.autoOpenPR": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open browser to PR after creation"
+        },
+        "markdownReview.branchPrefix": {
+          "type": "string",
+          "default": "doc-comment",
+          "description": "Prefix for branches created when publishing comments"
+        },
+        "markdownReview.defaultProvider": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "github",
+            "azuredevops"
+          ],
+          "default": "auto",
+          "description": "Git provider for PR creation (auto-detects from remotes)"
+        }
+      }
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "markdownReview.openPreview",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "markdownReview.openPreview",
+          "when": "resourceExtname == .md",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/markdown-it": "^14.1.2",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.10.0",
+    "@types/uuid": "^9.0.7",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.55.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "azure-devops-node-api": "^12.5.0",
+    "markdown-it": "^14.0.0",
+    "simple-git": "^3.21.0",
+    "uuid": "^9.0.1"
+  }
+}
