@@ -153,7 +153,11 @@ export class GitService {
     // Check for uncommitted changes before branching
     try {
       const status = await this.git.status();
-      if (status.modified.length > 0 || status.staged.length > 0 || status.not_added.length > 0) {
+      const isSidecar = (f: string) => f.endsWith('.comments.json');
+      const nonSidecarModified = status.modified.filter(f => !isSidecar(f));
+      const nonSidecarStaged = status.staged.filter(f => !isSidecar(f));
+      const nonSidecarUntracked = status.not_added.filter(f => !isSidecar(f));
+      if (nonSidecarModified.length > 0 || nonSidecarStaged.length > 0 || nonSidecarUntracked.length > 0) {
         vscode.window.showErrorMessage(
           'You have uncommitted changes. Please commit or stash them before publishing comments.'
         );

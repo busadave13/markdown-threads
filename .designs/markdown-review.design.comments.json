@@ -1,0 +1,44 @@
+{
+  "doc": "markdown-review.design.md",
+  "version": "1.0",
+  "comments": [
+    {
+      "anchor": {
+        "sectionSlug": "markdown-review-extension",
+        "contentHash": "e3b0c44298fc1c14",
+        "lineHint": 0
+      },
+      "status": "open",
+      "isDraft": true,
+      "thread": [
+        {
+          "id": "44d5b317-81fb-4d40-a820-1519fac9c8b2",
+          "author": "Dave Harding",
+          "body": "test",
+          "created": "2026-02-21T23:46:52.565Z",
+          "edited": null
+        }
+      ],
+      "id": "8de5963d-ab5b-4702-a5e8-c3e58fa18a97"
+    },
+    {
+      "anchor": {
+        "sectionSlug": "markdown-review-extension",
+        "contentHash": "e3b0c44298fc1c14",
+        "lineHint": 0
+      },
+      "status": "open",
+      "isDraft": true,
+      "thread": [
+        {
+          "id": "80f1aabc-3a87-4320-80c3-54ce8fb520d6",
+          "author": "Dave Harding",
+          "body": "test",
+          "created": "2026-02-21T23:46:55.016Z",
+          "edited": null
+        }
+      ],
+      "id": "61814692-725d-4966-91dc-7fed399ecef0"
+    }
+  ]
+}
