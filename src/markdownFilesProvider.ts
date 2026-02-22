@@ -239,3 +239,51 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     this._onDidChangeTreeData.dispose();
   }
 }
+
+/**
+ * Provides file decorations (badges/colors) for markdown files with comments.
+ */
+export class MarkdownFileDecorationProvider implements vscode.FileDecorationProvider {
+  private _onDidChangeFileDecorations = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
+  readonly onDidChangeFileDecorations = this._onDidChangeFileDecorations.event;
+
+  // Cache of files with comments
+  private filesWithComments = new Set<string>();
+
+  async updateDecorations(): Promise<void> {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      return;
+    }
+
+    // Find all sidecar files
+    const sidecarFiles = await vscode.workspace.findFiles('**/*.comments.json');
+    this.filesWithComments.clear();
+
+    for (const sidecarUri of sidecarFiles) {
+      // Convert sidecar path to markdown path
+      const mdPath = sidecarUri.fsPath.replace(/\.comments\.json$/, '.md');
+      const sidecar = await sidecarManager.readSidecar(mdPath);
+      if (sidecar && sidecar.comments.length > 0) {
+        this.filesWithComments.add(mdPath);
+      }
+    }
+
+    this._onDidChangeFileDecorations.fire(undefined);
+  }
+
+  provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    if (this.filesWithComments.has(uri.fsPath)) {
+      return {
+        badge: '💬',
+        color: new vscode.ThemeColor('editorWarning.foreground'),
+        tooltip: 'Has comments',
+      };
+    }
+    return undefined;
+  }
+
+  dispose(): void {
+    this._onDidChangeFileDecorations.dispose();
+  }
+}

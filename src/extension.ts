@@ -5,10 +5,11 @@ import { gitService } from './gitService';
 import { gitHubProvider } from './providers/githubProvider';
 import { adoProvider } from './providers/adoProvider';
 import { PreviewPanel } from './previewPanel';
-import { MarkdownFilesProvider } from './markdownFilesProvider';
+import { MarkdownFilesProvider, MarkdownFileDecorationProvider } from './markdownFilesProvider';
 
 let statusBarItem: vscode.StatusBarItem;
 let markdownFilesProvider: MarkdownFilesProvider;
+let decorationProvider: MarkdownFileDecorationProvider;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('[MarkdownReview] Extension activating...');
@@ -16,6 +17,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Set extension URI for PreviewPanel to locate bundled resources (e.g., mermaid.js)
   PreviewPanel.setExtensionUri(context.extensionUri);
+
+  // Create and register the file decoration provider for comment badges
+  decorationProvider = new MarkdownFileDecorationProvider();
+  context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorationProvider));
+  context.subscriptions.push({ dispose: () => decorationProvider.dispose() });
+  decorationProvider.updateDecorations();
 
   // Create and register the tree view for markdown files
   markdownFilesProvider = new MarkdownFilesProvider();
@@ -27,8 +34,10 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push({ dispose: () => markdownFilesProvider.dispose() });
 
   // Update tree view description when folder selection changes
+  // Also update decorations when tree data changes
   markdownFilesProvider.onDidChangeTreeData(() => {
     treeView.description = markdownFilesProvider.getSelectedFolderName();
+    decorationProvider.updateDecorations();
   });
 
   // Create status bar item
