@@ -1678,13 +1678,14 @@ const PREVIEW_JS = /* js */ `
     // Only add to sidebar immediately if the section has existing comments
     if (hasComments) {
       const totalComments = threads.reduce((sum, t) => sum + t.thread.thread.length, 0);
+      const threadCount = threads.length;
       const result = ensureSidebarSection(slug, headingText, heading);
 
-      // Badge on the heading showing comment count → scrolls to sidebar
+      // Badge on the heading showing thread count → scrolls to sidebar
       const badge = document.createElement('button');
       badge.className = 'comment-badge';
-      badge.textContent = totalComments + ' comment' + (totalComments !== 1 ? 's' : '');
-      badge.title = 'View comments in sidebar';
+      badge.textContent = threadCount + ' thread' + (threadCount !== 1 ? 's' : '');
+      badge.title = totalComments + ' comment' + (totalComments !== 1 ? 's' : '') + ' in ' + threadCount + ' thread' + (threadCount !== 1 ? 's' : '');
       badge.addEventListener('click', (e) => {
         e.stopPropagation();
         highlightSection(result.section);
