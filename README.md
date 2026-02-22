@@ -2,6 +2,8 @@
 
 Add threaded review comments to any markdown file in your Git repository — right from VS Code. Comments are stored as sidecar JSON files alongside your docs, and can be published as pull requests to GitHub or Azure DevOps with one click.
 
+![Markdown Review screenshot](https://raw.githubusercontent.com/busadave13/markdown-review/main/.images/screen.png)
+
 ## Features
 
 - **Preview sidebar** — Right-click any `.md` file → "Markdown: Review and Comment" to open a rendered preview with an inline comment sidebar
@@ -12,6 +14,8 @@ Add threaded review comments to any markdown file in your Git repository — rig
 - **Statistics chart** — See open vs resolved thread counts at a glance
 - **Draft mode** — Comments are saved locally as drafts until you publish
 - **One-click PR creation** — Publish all draft comments as a pull request to GitHub or Azure DevOps
+
+
 
 ## How It Works
 
