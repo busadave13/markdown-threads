@@ -101,7 +101,14 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     const excludePattern = await this.buildExcludePattern();
 
     // Root level: find all markdown files, excluding ignored patterns
-    const mdFiles = await vscode.workspace.findFiles('**/*.md', excludePattern);
+    let mdFiles = await vscode.workspace.findFiles('**/*.md', excludePattern);
+
+    // Additional filter for patterns that brace expansion might miss
+    const ignoredDirs = ['/node_modules/', '/.git/', '/.vscode-test/', '/out/'];
+    mdFiles = mdFiles.filter(uri => {
+      const fsPath = uri.fsPath;
+      return !ignoredDirs.some(dir => fsPath.includes(dir));
+    });
 
     if (mdFiles.length === 0) {
       return [];
@@ -121,7 +128,13 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
       return '**/node_modules/**';
     }
 
-    const patterns: string[] = ['**/node_modules/**', '**/.git/**'];
+    // Hardcode common excludes that are always filtered
+    const patterns: string[] = [
+      '**/node_modules/**',
+      '**/.git/**',
+      '**/.vscode-test/**',
+      '**/out/**',
+    ];
 
     // Read .gitignore
     const gitignorePath = path.join(workspaceRoot, '.gitignore');
