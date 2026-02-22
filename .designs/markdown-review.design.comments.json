@@ -4,60 +4,44 @@
   "comments": [
     {
       "anchor": {
-        "sectionSlug": "markdown-review-extension",
-        "contentHash": "e3b0c44298fc1c14",
-        "lineHint": 0
+        "sectionSlug": "problem-statement",
+        "contentHash": "0d30abb5e14109ee",
+        "lineHint": 6
       },
-      "status": "open",
-      "isDraft": false,
+      "status": "resolved",
+      "isDraft": true,
       "thread": [
         {
-          "id": "44d5b317-81fb-4d40-a820-1519fac9c8b2",
+          "id": "13843588-9c23-431b-a5a7-0a7016b958cd",
           "author": "Dave Harding",
-          "body": "test",
-          "created": "2026-02-21T23:46:52.565Z",
-          "edited": null
+          "body": "Need to expand on this problem statements more.",
+          "created": "2026-02-22T02:26:47.666Z",
+          "edited": null,
+          "reactions": [
+            "Dave Harding"
+          ]
         }
       ],
-      "id": "8de5963d-ab5b-4702-a5e8-c3e58fa18a97"
+      "id": "a447a74e-9b12-488c-864b-244d722bcf62"
     },
     {
       "anchor": {
-        "sectionSlug": "markdown-review-extension",
-        "contentHash": "e3b0c44298fc1c14",
-        "lineHint": 0
+        "sectionSlug": "non-goals",
+        "contentHash": "c7dd62015ec99b5e",
+        "lineHint": 24
       },
       "status": "open",
-      "isDraft": false,
+      "isDraft": true,
       "thread": [
         {
-          "id": "80f1aabc-3a87-4320-80c3-54ce8fb520d6",
+          "id": "eadae6b6-f7f2-410c-9f0a-6a1152260308",
           "author": "Dave Harding",
-          "body": "test",
-          "created": "2026-02-21T23:46:55.016Z",
+          "body": "Do we need a non-goals section for this?",
+          "created": "2026-02-22T02:27:29.325Z",
           "edited": null
         }
       ],
-      "id": "61814692-725d-4966-91dc-7fed399ecef0"
-    },
-    {
-      "anchor": {
-        "sectionSlug": "overview",
-        "contentHash": "d31825c8c7b89397",
-        "lineHint": 2
-      },
-      "status": "open",
-      "isDraft": false,
-      "thread": [
-        {
-          "id": "7eb49134-0fc3-42f5-a00f-3efc694d7113",
-          "author": "Dave Harding",
-          "body": "fdsfd",
-          "created": "2026-02-21T23:49:26.347Z",
-          "edited": null
-        }
-      ],
-      "id": "017dedbe-840c-463d-bb1d-ee2a8b187cfe"
+      "id": "a6da9182-a7a1-4c41-b551-83a552545550"
     }
   ]
 }
