@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- **Bug fix: Orphaned comment threads now displayed** — When a markdown section is deleted, its comment threads now appear in a dedicated "Orphaned Comments" section at the bottom of the sidebar with a "⚠ Section Removed" indicator. Users can still resolve or delete orphaned threads. The statistics chart now includes an "Orphaned" category. (Fixes #6)
+- **Reparent orphaned threads** — When a heading is renamed (changing its slug), orphaned threads can now be reparented. If the thread's original line number or content hash matches an existing section, a "🔗 Reparent to: [Section Name]" button appears for one-click reparenting. Otherwise, a dropdown allows manual selection of the target section.
+
 ## 0.1.0 — Initial Release
 
 - **Preview-only commenting** — WebView sidebar for adding threaded comments to any markdown file
