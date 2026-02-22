@@ -26,6 +26,11 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(treeView);
   context.subscriptions.push({ dispose: () => markdownFilesProvider.dispose() });
 
+  // Update tree view description when folder selection changes
+  markdownFilesProvider.onDidChangeTreeData(() => {
+    treeView.description = markdownFilesProvider.getSelectedFolderName();
+  });
+
   // Create status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'markdownReview.publishDrafts';
@@ -35,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('markdownReview.publishDrafts', handlePublishDrafts),
     vscode.commands.registerCommand('markdownReview.refreshFiles', () => markdownFilesProvider.refresh()),
+    vscode.commands.registerCommand('markdownReview.selectFolder', () => markdownFilesProvider.selectFolder()),
     vscode.commands.registerCommand('markdownReview.openPreview', async (uri?: vscode.Uri) => {
       let document: vscode.TextDocument | undefined;
       if (uri) {

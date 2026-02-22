@@ -65,6 +65,12 @@
         "title": "Refresh",
         "category": "Markdown Review",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "markdownReview.selectFolder",
+        "title": "Filter by Folder",
+        "category": "Markdown Review",
+        "icon": "$(folder)"
       }
     ],
     "configuration": {
@@ -109,9 +115,14 @@
       ],
       "view/title": [
         {
+          "command": "markdownReview.selectFolder",
+          "when": "view == markdownReview.files",
+          "group": "navigation@1"
+        },
+        {
           "command": "markdownReview.refreshFiles",
           "when": "view == markdownReview.files",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [

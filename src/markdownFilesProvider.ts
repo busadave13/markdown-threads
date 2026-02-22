@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
 import { sidecarManager } from './sidecarManager';
 
 /**
@@ -61,6 +60,7 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
 
   private fileWatcher: vscode.FileSystemWatcher | undefined;
   private sidecarWatcher: vscode.FileSystemWatcher | undefined;
+  private selectedFolder: string | undefined; // undefined = show all folders
 
   constructor() {
     // Watch for markdown file changes
@@ -74,6 +74,66 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     this.sidecarWatcher.onDidCreate(() => this.refresh());
     this.sidecarWatcher.onDidDelete(() => this.refresh());
     this.sidecarWatcher.onDidChange(() => this.refresh());
+  }
+
+  /**
+   * Shows a QuickPick to select a folder to filter markdown files.
+   */
+  async selectFolder(): Promise<void> {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      return;
+    }
+
+    // Find all directories containing markdown files
+    const mdFiles = await vscode.workspace.findFiles('**/*.md');
+    const folders = new Set<string>();
+    folders.add(''); // Root option (show all)
+
+    for (const file of mdFiles) {
+      const relativePath = path.relative(workspaceRoot, file.fsPath);
+      const dir = path.dirname(relativePath);
+      if (dir !== '.') {
+        // Add all parent directories
+        const parts = dir.split(path.sep);
+        let current = '';
+        for (const part of parts) {
+          current = current ? path.join(current, part) : part;
+          folders.add(current);
+        }
+      }
+    }
+
+    // Build QuickPick items
+    const items: vscode.QuickPickItem[] = [
+      { label: '$(home) All Folders', description: 'Show all markdown files', detail: '' },
+    ];
+
+    const sortedFolders = Array.from(folders).filter(f => f !== '').sort();
+    for (const folder of sortedFolders) {
+      items.push({
+        label: `$(folder) ${folder}`,
+        description: '',
+        detail: folder,
+      });
+    }
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select a folder to filter markdown files',
+      title: 'Filter by Folder',
+    });
+
+    if (selected) {
+      this.selectedFolder = selected.detail || undefined;
+      this.refresh();
+    }
+  }
+
+  /**
+   * Gets the currently selected folder name for display.
+   */
+  getSelectedFolderName(): string {
+    return this.selectedFolder || 'All Folders';
   }
 
   refresh(): void {
@@ -97,14 +157,21 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
       return [];
     }
 
-    // Get ignored directory patterns from .gitignore and .vscodeignore
-    const ignoredPatterns = await this.getIgnoredPatterns();
+    const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
 
-    // Root level: find all markdown files
-    let mdFiles = await vscode.workspace.findFiles('**/*.md');
+    // Build search pattern based on selected folder
+    const searchPattern = this.selectedFolder
+      ? `${this.selectedFolder}/**/*.md`
+      : '**/*.md';
 
-    // Filter out files matching ignored patterns
-    mdFiles = mdFiles.filter(uri => !this.isIgnored(uri.fsPath, ignoredPatterns));
+    // Find markdown files (filtered by folder if selected)
+    let mdFiles = await vscode.workspace.findFiles(searchPattern);
+
+    // If a folder is selected, also filter to ensure files are within that folder
+    if (this.selectedFolder) {
+      const selectedPath = path.join(workspaceRoot, this.selectedFolder);
+      mdFiles = mdFiles.filter(uri => uri.fsPath.startsWith(selectedPath));
+    }
 
     if (mdFiles.length === 0) {
       return [];
@@ -113,131 +180,6 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     // Build tree structure grouped by folder
     const tree = await this.buildTree(mdFiles);
     return tree;
-  }
-
-  /**
-   * Checks if a file path matches any ignored pattern.
-   */
-  private isIgnored(filePath: string, patterns: string[]): boolean {
-    // Normalize path separators
-    const normalizedPath = filePath.replace(/\\/g, '/');
-
-    for (const pattern of patterns) {
-      // Convert glob pattern to a simple check
-      // Handle patterns like **/node_modules/**, **/.vscode-test/**, etc.
-      const dirMatch = pattern.match(/^\*\*\/(.+)\/\*\*$/);
-      if (dirMatch) {
-        const dirName = dirMatch[1];
-        if (normalizedPath.includes(`/${dirName}/`)) {
-          return true;
-        }
-      }
-
-      // Handle patterns like **/*.vsix, **/*.map
-      const extMatch = pattern.match(/^\*\*\/\*(\.[a-zA-Z0-9]+)$/);
-      if (extMatch) {
-        const ext = extMatch[1];
-        if (normalizedPath.endsWith(ext)) {
-          return true;
-        }
-      }
-
-      // Handle simple directory patterns like **/out/**
-      if (pattern.includes('/') && !pattern.includes('*')) {
-        const cleanPattern = pattern.replace(/^\*\*\//, '').replace(/\/\*\*$/, '');
-        if (normalizedPath.includes(`/${cleanPattern}/`)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Gets ignored patterns from .gitignore and .vscodeignore files.
-   */
-  private async getIgnoredPatterns(): Promise<string[]> {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceRoot) {
-      return [];
-    }
-
-    const patterns: string[] = [];
-
-    // Read .gitignore
-    const gitignorePath = path.join(workspaceRoot, '.gitignore');
-    patterns.push(...this.parseIgnoreFile(gitignorePath));
-
-    // Read .vscodeignore
-    const vscodeignorePath = path.join(workspaceRoot, '.vscodeignore');
-    patterns.push(...this.parseIgnoreFile(vscodeignorePath));
-
-    return patterns;
-  }
-
-  /**
-   * Parses an ignore file and returns glob patterns suitable for VS Code findFiles.
-   */
-  private parseIgnoreFile(filePath: string): string[] {
-    try {
-      if (!fs.existsSync(filePath)) {
-        return [];
-      }
-
-      const content = fs.readFileSync(filePath, 'utf8');
-      const lines = content.split('\n');
-      const patterns: string[] = [];
-
-      for (let line of lines) {
-        // Trim whitespace
-        line = line.trim();
-
-        // Skip empty lines and comments
-        if (!line || line.startsWith('#')) {
-          continue;
-        }
-
-        // Skip negation patterns (not supported in simple glob exclude)
-        if (line.startsWith('!')) {
-          continue;
-        }
-
-        // Convert gitignore patterns to glob patterns
-        let pattern = line;
-
-        // Track if this was explicitly a directory pattern (ends with /)
-        const isDirectory = pattern.endsWith('/');
-
-        // Remove trailing slashes (directories)
-        if (isDirectory) {
-          pattern = pattern.slice(0, -1);
-        }
-
-        // If pattern doesn't start with ** or /, make it match anywhere
-        if (!pattern.startsWith('**/') && !pattern.startsWith('/')) {
-          pattern = `**/${pattern}`;
-        }
-
-        // Remove leading / (root-relative in gitignore)
-        if (pattern.startsWith('/')) {
-          pattern = pattern.slice(1);
-        }
-
-        // Add /** suffix for directory patterns to match contents
-        // Directory patterns: ended with /, or no file extension and no glob wildcards
-        const hasExtension = /\.[a-zA-Z0-9]+$/.test(pattern);
-        if (isDirectory || (!pattern.endsWith('/**') && !hasExtension && !pattern.includes('*'))) {
-          pattern = `${pattern}/**`;
-        }
-
-        patterns.push(pattern);
-      }
-
-      return patterns;
-    } catch {
-      return [];
-    }
   }
 
   private async buildTree(files: vscode.Uri[]): Promise<TreeItem[]> {
