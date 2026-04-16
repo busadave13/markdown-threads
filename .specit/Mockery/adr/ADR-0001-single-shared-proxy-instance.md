@@ -2,12 +2,12 @@
 
 # ADR-0001: Single Shared Proxy Instance for All Upstream Services
 
-> **Version**: 1.0.0<br>
+> **Version**: 1.0<br>
 > **Created**: 2026-04-10<br>
-> **Last Updated**: 2026-04-10<br>
+> **Last Updated**: 2026-04-16<br>
 > **Owner**: Dave Harding<br>
 > **Project**: Mockery<br>
-> **Status**: Draft
+> **Status**: Approved
 
 ---
 
