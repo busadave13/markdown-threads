@@ -1,8 +1,15 @@
 # Changelog
 
-## 0.2.2 — Exclude Folders from Tree View
+## 0.2.2 — Exclude Folders & Enhanced Reading Pane
 
 - **Configurable folder exclusions** — New `markdownThreads.excludeFolders` setting to hide markdown files from specified folders (e.g., `node_modules`, `.github`, `.git`, `out`, `dist`, `bin`, `obj`, `.vscode`) in the Markdown Files sidebar. The tree view and folder filter picker both respect the setting. Changes take effect immediately.
+- **Client-side markdown rendering** — Switched from server-side markdown-it to client-side rendering via CDN, improving consistency and enabling richer post-processing (checkboxes, mermaid diagrams with zoom/pan).
+- **Sticky document header** — Document title bar with refresh button stays visible while scrolling.
+- **Find in document** — Press Ctrl+F / Cmd+F to search within the rendered document with match navigation (Enter/Shift+Enter) and highlight.
+- **Checkbox rendering** — Markdown task lists (`[ ]` / `[x]`) now render as styled checkboxes.
+- **External CSS** — All preview styles moved to `media/preview-styles.css` for easier maintenance.
+- **Visual refresh** — Reading pane styling aligned with mark-it-up for improved typography, code blocks, tables, and blockquotes.
+- **Extension bundling** — Switched to esbuild for single-file bundling. VSIX reduced from 4164 files to 13 files (53 KB). Removed unused `markdown-it` and `mermaid` npm dependencies (now loaded from CDN).
 
 ## 0.2.1 — Documentation Update
 

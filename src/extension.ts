@@ -9,7 +9,7 @@ export async function activate(context: vscode.ExtensionContext) {
   console.log('[MarkdownThreads] Extension activating...');
   console.log('[MarkdownThreads] Workspace folders:', vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath));
 
-  // Set extension URI for PreviewPanel to locate bundled resources (e.g., mermaid.js)
+  // Set extension URI for PreviewPanel to locate bundled resources (e.g., media/)
   PreviewPanel.setExtensionUri(context.extensionUri);
 
   // Create and register the tree view for markdown files
@@ -33,11 +33,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('markdownThreads.openPreview', async (uri?: vscode.Uri) => {
       let document: vscode.TextDocument | undefined;
       if (uri) {
-        // Invoked from explorer context menu — load document without opening an editor
+        // Invoked from explorer context menu or tree view — load document without opening an editor
         document = await vscode.workspace.openTextDocument(uri);
-        // Show preview panel first
-        await PreviewPanel.show(document);
-        // Close any editor tab the explorer may have opened for this file
+        // Close any editor tab the explorer may have opened BEFORE showing preview
+        // to avoid active-editor-change events triggering a spurious re-render
         for (const tabGroup of vscode.window.tabGroups.all) {
           for (const tab of tabGroup.tabs) {
             const tabUri = (tab.input as { uri?: vscode.Uri })?.uri;
@@ -46,6 +45,7 @@ export async function activate(context: vscode.ExtensionContext) {
             }
           }
         }
+        await PreviewPanel.show(document);
         return;
       } else {
         // Invoked from command palette or editor title

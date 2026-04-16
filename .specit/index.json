@@ -1,0 +1,181 @@
+{
+  "version": "1.0.0",
+  "documents": {
+    "PRD": {
+      "type": "prd",
+      "path": "PRD.md",
+      "version": "2.4.0",
+      "status": "Draft",
+      "owner": "Dave Harding",
+      "created": "2026-04-01",
+      "lastUpdated": "2026-04-12"
+    },
+    "ARCHITECTURE": {
+      "type": "architecture",
+      "path": "ARCHITECTURE.md",
+      "version": "1.3.0",
+      "status": "Draft",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-11"
+    },
+    "ADR-0001": {
+      "type": "adr",
+      "path": "adr/ADR-0001-single-shared-proxy-instance.md",
+      "version": "1.0.0",
+      "status": "Accepted",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-10"
+    },
+    "ADR-0002": {
+      "type": "adr",
+      "path": "adr/ADR-0002-filesystem-mock-store.md",
+      "version": "1.0.0",
+      "status": "Superseded",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-10",
+      "supersededBy": "ADR-0006"
+    },
+    "ADR-0003": {
+      "type": "adr",
+      "path": "adr/ADR-0003-url-template-normalisation-strategy.md",
+      "version": "1.0.1",
+      "status": "Accepted",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-12"
+    },
+    "ADR-0004": {
+      "type": "adr",
+      "path": "adr/ADR-0004-ai-transform-agent-for-sanitisation.md",
+      "version": "1.0.0",
+      "status": "Accepted",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-10"
+    },
+    "ADR-0005": {
+      "type": "adr",
+      "path": "adr/ADR-0005-caller-to-service-routing.md",
+      "version": "2.0.1",
+      "status": "Accepted",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-12"
+    },
+    "ADR-0006": {
+      "type": "adr",
+      "path": "adr/ADR-0006-azure-blob-storage-mock-store.md",
+      "version": "1.0.0",
+      "status": "Accepted",
+      "owner": "Dave Harding",
+      "created": "2026-04-10",
+      "lastUpdated": "2026-04-12",
+      "supersedes": "ADR-0002"
+    },
+    "ADR-0007": {
+      "type": "adr",
+      "path": "adr/ADR-0007-mockery-http-handler-multi-hop.md",
+      "version": "1.0.2",
+      "status": "Accepted",
+      "owner": "Dave Harding",
+      "created": "2026-04-11",
+      "lastUpdated": "2026-04-12"
+    },
+    "FEAT-001": {
+      "type": "feature",
+      "path": "feature/FEAT-001-transparent-proxy-and-capture.md",
+      "version": "1.0.0",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0001", "ADR-0005", "ADR-0006"]
+    },
+    "FEAT-002": {
+      "type": "feature",
+      "path": "feature/FEAT-002-service-routing.md",
+      "version": "1.1.0",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0001", "ADR-0005", "ADR-0007"]
+    },
+    "FEAT-003": {
+      "type": "feature",
+      "path": "feature/FEAT-003-url-template-normalisation.md",
+      "version": "1.1.0",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0003"]
+    },
+    "FEAT-004": {
+      "type": "feature",
+      "path": "feature/FEAT-004-ai-response-sanitisation.md",
+      "version": "1.1.0",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0004"]
+    },
+    "FEAT-005": {
+      "type": "feature",
+      "path": "feature/FEAT-005-mock-store.md",
+      "version": "1.1.1",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0002", "ADR-0006"]
+    },
+    "FEAT-006": {
+      "type": "feature",
+      "path": "feature/FEAT-006-manual-mock-authoring.md",
+      "version": "1.0.1",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12"
+    },
+    "FEAT-007": {
+      "type": "feature",
+      "path": "feature/FEAT-007-mockery-http-handler.md",
+      "version": "1.1.0",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0007"]
+    },
+    "FEAT-008": {
+      "type": "feature",
+      "path": "feature/FEAT-008-aspire-integration.md",
+      "version": "1.1.1",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0005", "ADR-0006", "ADR-0007"]
+    },
+    "FEAT-009": {
+      "type": "feature",
+      "path": "feature/FEAT-009-environment-portability.md",
+      "version": "1.1.1",
+      "status": "Ready",
+      "owner": "Dave Harding",
+      "created": "2026-04-12",
+      "lastUpdated": "2026-04-12",
+      "relatedAdrs": ["ADR-0005", "ADR-0006", "ADR-0007"]
+    }
+  },
+  "counters": {
+    "nextAdr": 8,
+    "nextFeature": 10
+  }
+}

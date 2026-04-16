@@ -1,12 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import MarkdownIt from 'markdown-it';
 import { sidecarManager } from './sidecarManager';
 import type { SidecarChangeEvent } from './sidecarManager';
 import { anchorEngine } from './anchorEngine';
 import { gitService } from './gitService';
-import { slugify } from './utils/hash';
-import { markdownItMermaid } from './utils/markdownItMermaid';
 import type { CommentThread as AppCommentThread } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -22,10 +19,12 @@ export class PreviewPanel implements vscode.Disposable {
 
   private readonly panel: vscode.WebviewPanel;
   private document: vscode.TextDocument;
-  private readonly md: MarkdownIt;
   private readonly disposables: vscode.Disposable[] = [];
   private updateTimeout: ReturnType<typeof setTimeout> | undefined;
-  private readonly mermaidUri: vscode.Uri;
+  private _isUpdating = false;
+  private readonly styleUri: vscode.Uri;
+  private readonly markdownItUri: vscode.Uri;
+  private readonly docDirUri: () => vscode.Uri;
 
   // ───────────────── public API ─────────────────
 
@@ -36,9 +35,16 @@ export class PreviewPanel implements vscode.Disposable {
 
   /** Create a new preview panel or reveal an existing one. */
   public static async show(document: vscode.TextDocument): Promise<void> {
+    // When an editor is open, open beside it and keep focus on the editor.
+    // When no editor is open, open in the main column and let the panel take focus
+    // so the webview renderer activates reliably.
+    const hasEditor = vscode.window.activeTextEditor !== undefined;
+    const viewColumn = hasEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.One;
+    const preserveFocus = hasEditor;
+
     if (PreviewPanel.instance) {
       PreviewPanel.instance.document = document;
-      PreviewPanel.instance.panel.reveal(vscode.ViewColumn.Beside, true);
+      PreviewPanel.instance.panel.reveal(viewColumn, preserveFocus);
       await PreviewPanel.instance.update();
       return;
     }
@@ -48,23 +54,15 @@ export class PreviewPanel implements vscode.Disposable {
       return;
     }
 
-    const mermaidPath = vscode.Uri.joinPath(
-      PreviewPanel.extensionUri,
-      'node_modules',
-      'mermaid',
-      'dist',
-      'mermaid.min.js'
-    );
-
     const localResourceRoots = [
       ...(vscode.workspace.workspaceFolders?.map(f => f.uri) ?? []),
-      vscode.Uri.joinPath(PreviewPanel.extensionUri, 'node_modules'),
+      vscode.Uri.joinPath(PreviewPanel.extensionUri, 'media'),
     ];
 
     const panel = vscode.window.createWebviewPanel(
       PreviewPanel.viewType,
       `Preview: ${path.basename(document.uri.fsPath)}`,
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { viewColumn, preserveFocus },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -72,19 +70,25 @@ export class PreviewPanel implements vscode.Disposable {
       },
     );
 
-    PreviewPanel.instance = new PreviewPanel(panel, document, mermaidPath);
+    PreviewPanel.instance = new PreviewPanel(panel, document);
     await PreviewPanel.instance.update();
   }
 
   // ───────────────── constructor ─────────────────
 
-  private constructor(panel: vscode.WebviewPanel, document: vscode.TextDocument, mermaidPath: vscode.Uri) {
+  private constructor(panel: vscode.WebviewPanel, document: vscode.TextDocument) {
     this.panel = panel;
     this.document = document;
-    this.mermaidUri = panel.webview.asWebviewUri(mermaidPath);
-    this.md = new MarkdownIt({ html: true, linkify: true, typographer: true });
-    this.md.use(markdownItMermaid);
-    this.installHeadingPlugin();
+    this.styleUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(PreviewPanel.extensionUri!, 'media', 'preview-styles.css')
+    );
+    this.markdownItUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(PreviewPanel.extensionUri!, 'media', 'markdown-it.min.js')
+    );
+    this.docDirUri = () => {
+      const dirUri = vscode.Uri.file(path.dirname(this.document.uri.fsPath));
+      return panel.webview.asWebviewUri(dirUri);
+    };
 
     // Dispose cleanup
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
@@ -154,6 +158,11 @@ export class PreviewPanel implements vscode.Disposable {
 
   private async handleWebViewMessage(msg: { command: string; [key: string]: unknown }): Promise<void> {
     switch (msg.command) {
+      case 'refresh': {
+        await this.update();
+        break;
+      }
+
       case 'addComment': {
         await this.ensureDocumentFresh();
         const selectedText = msg.selectedText as string;
@@ -298,28 +307,6 @@ export class PreviewPanel implements vscode.Disposable {
     }
   }
 
-  // ───────────────── markdown-it heading plugin ─────────────────
-
-  /** Adds slug-based IDs and data attributes to heading tokens. */
-  private installHeadingPlugin(): void {
-    const originalRule = this.md.renderer.rules.heading_open;
-
-    this.md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
-      const token = tokens[idx];
-      const nextToken = tokens[idx + 1];
-      if (nextToken?.type === 'inline' && nextToken.content) {
-        const slug = slugify(nextToken.content);
-        token.attrSet('id', slug);
-        token.attrSet('data-slug', slug);
-        token.attrJoin('class', 'section-heading');
-      }
-      if (originalRule) {
-        return originalRule(tokens, idx, options, env, self);
-      }
-      return self.renderToken(tokens, idx, options);
-    };
-  }
-
   // ───────────────── update / render ─────────────────
 
   private scheduleUpdate(): void {
@@ -334,14 +321,13 @@ export class PreviewPanel implements vscode.Disposable {
   }
 
   private async update(): Promise<void> {
+    if (this._isUpdating) { return; }
+    this._isUpdating = true;
+    try {
     // Ensure document reference is fresh (in case editor tab was closed)
     await this.ensureDocumentFresh();
 
     const rawMarkdown = this.document.getText().replace(/\r\n/g, '\n');
-
-    // Render markdown → HTML
-    let html = this.md.render(rawMarkdown);
-    html = this.fixLocalImagePaths(html);
 
     // Load comments and run stale detection
     const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
@@ -383,26 +369,16 @@ export class PreviewPanel implements vscode.Disposable {
     const currentUser = await gitService.getUserName();
 
     this.panel.title = `Preview: ${path.basename(this.document.uri.fsPath)}`;
-    this.panel.webview.html = this.buildHtml(html, threadsData, currentUser);
-  }
-
-  /** Convert relative image paths to webview-safe URIs. */
-  private fixLocalImagePaths(html: string): string {
-    const docDir = path.dirname(this.document.uri.fsPath);
-    return html.replace(
-      /(<img[^>]*\ssrc=")(?!https?:\/\/|data:)([^"]+)/g,
-      (_match, prefix: string, src: string) => {
-        const absPath = path.resolve(docDir, src);
-        const webviewUri = this.panel.webview.asWebviewUri(vscode.Uri.file(absPath));
-        return prefix + webviewUri.toString();
-      },
-    );
+    this.panel.webview.html = this.buildHtml(rawMarkdown, threadsData, currentUser);
+    } finally {
+      this._isUpdating = false;
+    }
   }
 
   // ───────────────── HTML template ─────────────────
 
   private buildHtml(
-    renderedMarkdown: string,
+    rawMarkdown: string,
     threads: Array<{
       id: string;
       selectedText: string;
@@ -418,6 +394,8 @@ export class PreviewPanel implements vscode.Disposable {
     const cspSource = this.panel.webview.cspSource;
     const threadsJson = JSON.stringify(threads).replace(/</g, '\\u003c');
     const userJson = JSON.stringify(currentUser).replace(/</g, '\\u003c');
+    const docTitle = path.basename(this.document.uri.fsPath);
+    const docDirBase = this.docDirUri().toString();
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -425,16 +403,27 @@ export class PreviewPanel implements vscode.Disposable {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; img-src ${cspSource} https: data:; font-src ${cspSource};">
-  <script src="${this.mermaidUri}"></script>
-  <style>
-${PREVIEW_CSS}
-  </style>
+        content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline' https://cdn.jsdelivr.net 'nonce-${nonce}' 'unsafe-eval'; img-src ${cspSource} https: data:; font-src ${cspSource};">
+  <link href="${this.styleUri}" rel="stylesheet">
+  <title>${escapeHtml(docTitle)}</title>
 </head>
 <body>
   <div id="layout">
-    <div id="content">
-      ${renderedMarkdown}
+    <div id="content-scroll">
+      <div class="doc-header">
+        <div class="doc-header-row">
+          <h1>${escapeHtml(docTitle)}</h1>
+          <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
+        </div>
+      </div>
+      <div class="find-bar" id="findBar">
+        <input type="text" id="findInput" placeholder="Find in document\u2026" autocomplete="off" />
+        <span class="find-info" id="findInfo"></span>
+        <button id="findPrev" title="Previous match (Shift+Enter)" disabled>&#x25B2;</button>
+        <button id="findNext" title="Next match (Enter)" disabled>&#x25BC;</button>
+        <button id="findClose" title="Close (Escape)">&#x2715;</button>
+      </div>
+      <div class="doc-content" id="content"></div>
     </div>
     <div id="resize-handle" title="Drag to resize sidebar"></div>
     <div id="sidebar">
@@ -447,9 +436,13 @@ ${PREVIEW_CSS}
   <div id="comment-toolbar">
     <button id="toolbar-comment-btn">\uD83D\uDCAC Comment</button>
   </div>
+  <script src="${this.markdownItUri}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script nonce="${nonce}">
     const threads = ${threadsJson};
     const currentUser = ${userJson};
+    const rawMarkdown = ${JSON.stringify(rawMarkdown)};
+    const docDirBase = ${JSON.stringify(docDirBase)};
 ${PREVIEW_JS}
   </script>
 </body>
@@ -481,471 +474,134 @@ function getNonce(): string {
   return text;
 }
 
-// ───────────────── CSS ─────────────────
-
-const PREVIEW_CSS = /* css */ `
-* { box-sizing: border-box; }
-
-body {
-  font-family: var(--vscode-markdown-font-family,
-    var(--vscode-font-family, -apple-system, BlinkMacSystemFont,
-    'Segoe WPC', 'Segoe UI', system-ui, 'Ubuntu', 'Droid Sans', sans-serif));
-  font-size: var(--vscode-markdown-font-size, var(--vscode-font-size, 14px));
-  line-height: var(--vscode-markdown-line-height, 1.6);
-  color: var(--vscode-foreground);
-  background-color: var(--vscode-editor-background);
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
-
-/* ── two‑column layout ─────────────────────── */
-
-#layout {
-  display: flex;
-  height: 100vh;
-  width: 100%;
-}
-
-#content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 32px;
-  word-wrap: break-word;
-}
-
-#sidebar {
-  width: 360px;
-  min-width: 200px;
-  max-width: 70vw;
-  border-left: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* ── resize handle ─────────────────────────── */
-
-#resize-handle {
-  width: 5px;
-  cursor: col-resize;
-  background: transparent;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 10;
-  transition: background .15s ease;
-}
-#resize-handle:hover,
-#resize-handle.active {
-  background: var(--vscode-focusBorder, #007fd4);
-}
-
-body.resizing {
-  cursor: col-resize !important;
-  user-select: none;
-}
-
-.sidebar-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  font-weight: 600;
-  font-size: 14px;
-  flex-shrink: 0;
-  color: var(--vscode-foreground);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.thread-count-badge {
-  font-size: 11px;
-  font-weight: normal;
-  color: var(--vscode-badge-foreground);
-  background: var(--vscode-badge-background);
-  padding: 1px 7px;
-  border-radius: 8px;
-  margin-left: 6px;
-}
-
-#sidebar-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0;
-}
-
-.sidebar-empty {
-  padding: 20px 16px;
-  text-align: center;
-  color: var(--vscode-descriptionForeground);
-  font-size: 13px;
-}
-
-/* ── typography ─────────────────────────────── */
-
-h1, h2, h3, h4, h5, h6 {
-  font-weight: 600;
-  margin-top: 24px;
-  margin-bottom: 16px;
-  line-height: 1.25;
-  color: var(--vscode-foreground);
-}
-h1 { font-size: 2em;   border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35)); padding-bottom: .3em; }
-h2 { font-size: 1.5em; border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35)); padding-bottom: .3em; }
-h3 { font-size: 1.25em; }
-h4 { font-size: 1em; }
-
-p { margin: 0 0 16px; }
-
-a { color: var(--vscode-textLink-foreground); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-code {
-  font-family: var(--vscode-editor-font-family, 'Menlo', 'Monaco', 'Courier New', monospace);
-  font-size: .9em;
-  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15));
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-pre {
-  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15));
-  padding: 16px;
-  border-radius: 6px;
-  overflow-x: auto;
-}
-pre code { background: none; padding: 0; }
-
-blockquote {
-  margin: 16px 0;
-  padding: 0 16px;
-  border-left: 4px solid var(--vscode-textBlockQuote-border, rgba(127,127,127,.35));
-  color: var(--vscode-textBlockQuote-foreground, inherit);
-}
-
-table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-th, td {
-  border: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  padding: 8px 12px; text-align: left;
-}
-th {
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.1));
-  font-weight: 600;
-}
-
-img { max-width: 100%; }
-hr { border: none; border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35)); margin: 24px 0; }
-
-ul, ol { padding-left: 2em; }
-
-/* ── text highlight on commented selections ─── */
-
-.comment-highlight {
-  border-radius: 2px;
-  cursor: pointer;
-  transition: filter .15s ease;
-}
-.comment-highlight:hover {
-  filter: brightness(1.2);
-}
-.comment-highlight.active {
-  outline: 2px solid var(--vscode-focusBorder, #007fd4);
-  outline-offset: 1px;
-}
-
-/* ── floating comment toolbar ──────────────── */
-
-#comment-toolbar {
-  display: none;
-  position: fixed;
-  z-index: 1000;
-  background: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.25);
-  padding: 4px;
-}
-#comment-toolbar button {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-  border: none;
-  border-radius: 4px;
-  padding: 4px 12px;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-#comment-toolbar button:hover {
-  background: var(--vscode-button-hoverBackground);
-}
-
-/* ── thread excerpt in sidebar ─────────────── */
-
-.thread-excerpt {
-  font-size: 12px;
-  color: var(--vscode-descriptionForeground);
-  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1));
-  padding: 4px 8px;
-  border-radius: 4px;
-  margin-bottom: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border-left: 3px solid;
-  cursor: pointer;
-}
-.thread-excerpt:hover {
-  background: var(--vscode-editor-hoverHighlightBackground, rgba(127,127,127,.15));
-}
-
-/* ── comment thread blocks (in sidebar) ─────── */
-
-.comment-thread-block {
-  border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
-  border-radius: 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.06));
-  padding: 10px 14px;
-  margin: 6px 16px;
-  transition: box-shadow 0.2s ease;
-  cursor: pointer;
-}
-.comment-thread-block.focused {
-  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
-}
-.comment-thread-block.stale    { border-left-color: var(--vscode-editorWarning-foreground, #cca700); }
-
-.thread-status-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  margin-bottom: 6px;
-}
-.thread-status-label.open     { color: var(--vscode-editorInfo-foreground, #3794ff); }
-.thread-status-label.stale    { color: var(--vscode-editorWarning-foreground, #cca700); }
-
-.comment-entry { padding: 6px 0; }
-.comment-entry + .comment-entry {
-  border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.15));
-  margin-top: 4px;
-}
-
-.comment-header { display: flex; flex-direction: column; gap: 1px; margin-bottom: 2px; }
-.comment-author { font-weight: 600; font-size: 12px; color: var(--vscode-textLink-foreground); }
-.comment-time   { font-size: 11px; color: var(--vscode-descriptionForeground); }
-
-.comment-body { font-size: 13px; line-height: 1.5; margin-top: 2px; white-space: pre-wrap; }
-
-/* ── comment form ──────────────────────────── */
-
-.comment-form {
-  margin: 8px 0 4px;
-  border: 1px solid var(--vscode-input-border, rgba(127,127,127,.35));
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--vscode-input-background, rgba(0,0,0,.15));
-}
-.comment-form textarea {
-  width: 100%;
-  min-height: 60px;
-  padding: 8px 10px;
-  border: none;
-  outline: none;
-  resize: vertical;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--vscode-input-foreground, var(--vscode-foreground));
-  background: transparent;
-}
-.comment-form textarea::placeholder { color: var(--vscode-input-placeholderForeground, rgba(127,127,127,.6)); }
-.comment-form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 6px 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.06));
-}
-.comment-form-actions button {
-  padding: 4px 14px;
-  border: none;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.btn-submit {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-}
-.btn-submit:hover { background: var(--vscode-button-hoverBackground); }
-.btn-cancel {
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.2));
-  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-}
-.btn-cancel:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,.3)); }
-
-/* ── thread action buttons ─────────────── */
-
-.thread-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.12));
-}
-.thread-action-btn {
-  background: transparent;
-  border: none;
-  color: var(--vscode-textLink-foreground);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-.thread-action-btn:hover {
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.15));
-}
-
-/* ── comment action links ─────────────────── */
-
-.comment-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 4px;
-}
-
-.action-link {
-  background: none;
-  border: none;
-  color: var(--vscode-textLink-foreground);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 0;
-  text-decoration: none;
-}
-.action-link:hover {
-  text-decoration: underline;
-}
-
-/* ── collapsed thread divider ──────────────── */
-
-.collapsed-divider {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  cursor: pointer;
-  color: var(--vscode-textLink-foreground);
-  font-size: 12px;
-  font-weight: 500;
-}
-.collapsed-divider:hover {
-  text-decoration: underline;
-}
-.collapsed-divider::before,
-.collapsed-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--vscode-widget-border, rgba(127,127,127,.25));
-}
-
-/* ── sidebar statistics chart ─────────────── */
-
-/* ── mermaid diagrams ─────────────────────────── */
-
-.mermaid-frame {
-  margin: 20px 0;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
-  border-radius: 8px;
-  background: var(--vscode-sideBar-background, rgba(128, 128, 128, 0.04));
-  overflow: hidden;
-}
-
-.mermaid-frame-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.06));
-  font-size: 0.82em;
-  user-select: none;
-}
-
-.mermaid-frame-toolbar .diagram-label {
-  flex: 1;
-  font-weight: 600;
-  color: var(--vscode-descriptionForeground, #888);
-}
-
-.mermaid-frame-toolbar .zoom-level {
-  min-width: 40px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  color: var(--vscode-descriptionForeground, #888);
-}
-
-.mermaid-frame-toolbar button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 26px;
-  height: 26px;
-  padding: 0 6px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--vscode-foreground, inherit);
-  cursor: pointer;
-  font-size: 1em;
-}
-
-.mermaid-frame-toolbar button:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.12));
-}
-
-.mermaid-frame-viewport {
-  position: relative;
-  overflow: hidden;
-  height: 400px;
-  cursor: grab;
-}
-
-.mermaid-frame-viewport.panning {
-  cursor: grabbing;
-}
-
-.mermaid-frame-content {
-  transform-origin: 0 0;
-  will-change: transform;
-  display: inline-block;
-  min-width: 100%;
-  text-align: center;
-}
-
-.mermaid-frame .mermaid {
-  margin: 16px;
-  text-align: center;
-}
-
-.mermaid:not(.mermaid-frame .mermaid) {
-  margin: 16px 0;
-  text-align: center;
-}
-`;
 
 // ───────────────── JS (runs inside the WebView) ─────────────────
 
 const PREVIEW_JS = /* js */ `
 (function () {
   const vscode = acquireVsCodeApi();
-  const content = document.getElementById('content');
+  const contentEl = document.getElementById('content');
+  const contentScroll = document.getElementById('content-scroll');
   const sidebarContent = document.getElementById('sidebar-content');
   const toolbar = document.getElementById('comment-toolbar');
   const toolbarBtn = document.getElementById('toolbar-comment-btn');
+
+  // ── client-side markdown rendering ─────────
+  function renderMarkdown() {
+    if (typeof window.markdownit !== 'function') {
+      // markdown-it not yet loaded — retry after window load
+      window.addEventListener('load', renderMarkdown, { once: true });
+      return;
+    }
+    const md = window.markdownit({
+      html: true,
+      linkify: true,
+      typographer: true,
+      breaks: false,
+    });
+
+    // Mermaid fence renderer
+    var diagramCounter = 0;
+    const defaultFenceRenderer = md.renderer.rules.fence;
+    md.renderer.rules.fence = function(tokens, idx, options, env, self) {
+      const token = tokens[idx];
+      if (token.info.trim() === 'mermaid') {
+        var dId = 'diagram-' + (diagramCounter++);
+        return '<div class="mermaid-frame" data-diagram-id="' + dId + '">'
+          + '<div class="mermaid-frame-toolbar">'
+          + '<span class="diagram-label">&#x1F4CA; Diagram</span>'
+          + '<button onclick="zoomDiagram(\\'' + dId + '\\', -1)" title="Zoom out">&#x2796;</button>'
+          + '<span class="zoom-level" id="zoom-label-' + dId + '">100%</span>'
+          + '<button onclick="zoomDiagram(\\'' + dId + '\\', 1)" title="Zoom in">&#x2795;</button>'
+          + '<button onclick="resetDiagram(\\'' + dId + '\\')" title="Reset view">Reset</button>'
+          + '</div>'
+          + '<div class="mermaid-frame-viewport" id="viewport-' + dId + '">'
+          + '<div class="mermaid-frame-content" id="content-' + dId + '">'
+          + '<div class="mermaid">' + md.utils.escapeHtml(token.content) + '</div>'
+          + '</div></div></div>';
+      }
+      if (defaultFenceRenderer) {
+        return defaultFenceRenderer(tokens, idx, options, env, self);
+      }
+      return '<pre><code>' + md.utils.escapeHtml(token.content) + '</code></pre>';
+    };
+
+    // Heading slug renderer
+    const defaultHeadingOpen = md.renderer.rules.heading_open;
+    md.renderer.rules.heading_open = function(tokens, idx, options, env, self) {
+      var token = tokens[idx];
+      var nextToken = tokens[idx + 1];
+      if (nextToken && nextToken.type === 'inline' && nextToken.content) {
+        var slug = nextToken.content
+          .toLowerCase()
+          .replace(/[^a-z0-9\\s-]/g, '')
+          .trim()
+          .replace(/\\s+/g, '-')
+          .replace(/-+/g, '-');
+        token.attrSet('id', slug);
+        token.attrSet('data-slug', slug);
+        token.attrJoin('class', 'section-heading');
+      }
+      if (defaultHeadingOpen) {
+        return defaultHeadingOpen(tokens, idx, options, env, self);
+      }
+      return self.renderToken(tokens, idx, options);
+    };
+
+    const rendered = md.render(rawMarkdown);
+    contentEl.innerHTML = rendered;
+
+    // Checkbox post-processing
+    document.querySelectorAll('#content li').forEach(function(li) {
+      var text = li.innerHTML;
+      if (text.startsWith('[ ] ')) {
+        li.innerHTML = '<input type="checkbox" disabled> ' + text.slice(4);
+      } else if (text.startsWith('[x] ') || text.startsWith('[X] ')) {
+        li.innerHTML = '<input type="checkbox" checked disabled> ' + text.slice(4);
+      }
+    });
+
+    // Fix relative image paths using the document directory base URI
+    document.querySelectorAll('#content img[src]').forEach(function(img) {
+      var src = img.getAttribute('src');
+      if (src && !/^https?:\\/\\//i.test(src) && !/^data:/i.test(src) && !/^vscode-/i.test(src)) {
+        img.setAttribute('src', docDirBase + '/' + src);
+      }
+    });
+
+    // Rewrite external links to data attributes to avoid VS Code interception
+    document.querySelectorAll('#content a[href]').forEach(function(a) {
+      var href = a.getAttribute('href');
+      if (href && /^https?:\\/\\//i.test(href)) {
+        a.setAttribute('data-external-url', href);
+        a.setAttribute('href', '#');
+      }
+    });
+
+    // Initialize mermaid
+    if (typeof mermaid !== 'undefined') {
+      var isDark = document.body.classList.contains('vscode-dark') ||
+                   document.body.classList.contains('vscode-high-contrast');
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: isDark ? 'dark' : 'default',
+        securityLevel: 'strict',
+      });
+    }
+  }
+  renderMarkdown();
+
+  // ── refresh button ─────────────────────────
+  document.getElementById('refreshBtn').addEventListener('click', function() {
+    vscode.postMessage({ command: 'refresh' });
+  });
 
   // ── highlight color palette ────────────────
   const HIGHLIGHT_COLORS = [
@@ -962,42 +618,16 @@ const PREVIEW_JS = /* js */ `
     return HIGHLIGHT_COLORS[index % HIGHLIGHT_COLORS.length];
   }
 
-  // ── mermaid initialization ─────────────────
-  (function initMermaid() {
-    if (typeof mermaid !== 'undefined') {
-      const isDark = document.body.classList.contains('vscode-dark') ||
-                     document.body.classList.contains('vscode-high-contrast') ||
-                     getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim().match(/^#[0-4]/);
-      mermaid.initialize({
-        startOnLoad: true,
-        theme: isDark ? 'dark' : 'default',
-        securityLevel: 'loose',
-      });
-    }
-  })();
-
   // ── external link handling ─────────────────
-  (function initLinks() {
-    // Rewrite external links to data attributes to avoid VS Code interception
-    document.querySelectorAll('#content a[href]').forEach(function(a) {
-      var href = a.getAttribute('href');
-      if (href && /^https?:[/][/]/i.test(href)) {
-        a.setAttribute('data-external-url', href);
-        a.setAttribute('href', '#');
-      }
-    });
-
-    // Intercept clicks on external links
-    content.addEventListener('click', function(e) {
-      var anchor = e.target.closest('a');
-      if (!anchor) { return; }
-      var externalUrl = anchor.getAttribute('data-external-url');
-      if (externalUrl) {
-        e.preventDefault();
-        vscode.postMessage({ command: 'openExternal', url: externalUrl });
-      }
-    });
-  })();
+  contentEl.addEventListener('click', function(e) {
+    var anchor = e.target.closest('a');
+    if (!anchor) { return; }
+    var externalUrl = anchor.getAttribute('data-external-url');
+    if (externalUrl) {
+      e.preventDefault();
+      vscode.postMessage({ command: 'openExternal', url: externalUrl });
+    }
+  });
 
   // ── mermaid diagram zoom & pan ─────────────
   var diagramStates = {};
@@ -1249,12 +879,12 @@ const PREVIEW_JS = /* js */ `
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { return 0; }
     const range = sel.getRangeAt(0);
     const preRange = document.createRange();
-    preRange.selectNodeContents(content);
+    preRange.selectNodeContents(contentEl);
     preRange.setEnd(range.startContainer, range.startOffset);
     return preRange.toString().length;
   }
 
-  content.addEventListener('mouseup', function(e) {
+  contentEl.addEventListener('mouseup', function(e) {
     setTimeout(function() {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.toString().trim()) {
@@ -1264,7 +894,7 @@ const PREVIEW_JS = /* js */ `
       }
       // Ensure selection is within #content
       const range = sel.getRangeAt(0);
-      if (!content.contains(range.commonAncestorContainer)) {
+      if (!contentEl.contains(range.commonAncestorContainer)) {
         toolbar.style.display = 'none';
         return;
       }
@@ -1287,7 +917,7 @@ const PREVIEW_JS = /* js */ `
   });
 
   // Hide toolbar on scroll or click outside
-  content.addEventListener('scroll', function() { toolbar.style.display = 'none'; });
+  contentScroll.addEventListener('scroll', function() { toolbar.style.display = 'none'; });
   document.addEventListener('mousedown', function(e) {
     if (!toolbar.contains(e.target) && e.target !== toolbar) {
       toolbar.style.display = 'none';
@@ -1342,7 +972,7 @@ const PREVIEW_JS = /* js */ `
   // ── highlight rendering ────────────────────
   function applyHighlights() {
     // Remove existing highlights
-    content.querySelectorAll('.comment-highlight').forEach(function(mark) {
+    contentEl.querySelectorAll('.comment-highlight').forEach(function(mark) {
       var parent = mark.parentNode;
       while (mark.firstChild) { parent.insertBefore(mark.firstChild, mark); }
       parent.removeChild(mark);
@@ -1357,13 +987,13 @@ const PREVIEW_JS = /* js */ `
   }
 
   function findAndWrapText(searchText, occurrenceIndex, color, threadId) {
-    if (!content || !searchText) { return; }
+    if (!contentEl || !searchText) { return; }
 
     // Build flat text map from DOM text nodes
-    var walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
+    var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, {
       acceptNode: function(node) {
         var parent = node.parentNode;
-        while (parent && parent !== content) {
+        while (parent && parent !== contentEl) {
           var tag = parent.nodeName.toLowerCase();
           if (tag === 'script' || tag === 'style') { return NodeFilter.FILTER_REJECT; }
           parent = parent.parentNode;
@@ -1442,7 +1072,7 @@ const PREVIEW_JS = /* js */ `
   applyHighlights();
 
   // ── click highlight → scroll to sidebar thread ──
-  content.addEventListener('click', function(e) {
+  contentEl.addEventListener('click', function(e) {
     var mark = e.target.closest('.comment-highlight');
     if (!mark) { return; }
     var threadId = mark.dataset.threadId;
@@ -1452,8 +1082,8 @@ const PREVIEW_JS = /* js */ `
       threadBlock.classList.add('focused');
       if (threadBlock.dataset.collapsible === 'true') { expandThread(threadBlock); }
       // Remove active from other highlights
-      content.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
-      content.querySelectorAll('.comment-highlight[data-thread-id="' + threadId + '"]').forEach(function(m) { m.classList.add('active'); });
+      contentEl.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
+      contentEl.querySelectorAll('.comment-highlight[data-thread-id="' + threadId + '"]').forEach(function(m) { m.classList.add('active'); });
     }
   });
 
@@ -1483,10 +1113,10 @@ const PREVIEW_JS = /* js */ `
     excerpt.addEventListener('click', function(e) {
       e.stopPropagation();
       // Scroll to the highlight in the content
-      var marks = content.querySelectorAll('.comment-highlight[data-thread-id="' + thread.id + '"]');
+      var marks = contentEl.querySelectorAll('.comment-highlight[data-thread-id="' + thread.id + '"]');
       if (marks.length > 0) {
         marks[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-        content.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
+        contentEl.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
         marks.forEach(function(m) { m.classList.add('active'); });
         setTimeout(function() { marks.forEach(function(m) { m.classList.remove('active'); }); }, 2000);
       }
@@ -1652,6 +1282,156 @@ const PREVIEW_JS = /* js */ `
     if (!badge) { return; }
     badge.textContent = String(threads.length);
     if (threads.length === 0) { badge.style.display = 'none'; }
+  })();
+
+  // ── Find / Search feature ──────────────────
+  (function() {
+    var findBar = document.getElementById('findBar');
+    var findInput = document.getElementById('findInput');
+    var findInfo = document.getElementById('findInfo');
+    var findPrevBtn = document.getElementById('findPrev');
+    var findNextBtn = document.getElementById('findNext');
+    var findCloseBtn = document.getElementById('findClose');
+
+    var matches = [];
+    var currentMatch = -1;
+    var originalContentHTML = '';
+
+    function openFindBar() {
+      originalContentHTML = originalContentHTML || contentEl.innerHTML;
+      findBar.classList.add('visible');
+      findInput.focus();
+      findInput.select();
+    }
+
+    function closeFindBar() {
+      findBar.classList.remove('visible');
+      clearHighlights();
+      findInput.value = '';
+      findInfo.textContent = '';
+      findPrevBtn.disabled = true;
+      findNextBtn.disabled = true;
+    }
+
+    function clearHighlights() {
+      if (originalContentHTML) {
+        contentEl.innerHTML = originalContentHTML;
+      }
+      matches = [];
+      currentMatch = -1;
+    }
+
+    function escapeRegex(str) {
+      return str.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\\\$&');
+    }
+
+    function highlightMatches(query) {
+      clearHighlights();
+      if (!query) {
+        findInfo.textContent = '';
+        findPrevBtn.disabled = true;
+        findNextBtn.disabled = true;
+        return;
+      }
+
+      var escaped = escapeRegex(query);
+      var regex = new RegExp('(' + escaped + ')', 'gi');
+
+      var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, null);
+      var textNodes = [];
+      while (walker.nextNode()) { textNodes.push(walker.currentNode); }
+
+      var matchIdx = 0;
+      textNodes.forEach(function(node) {
+        var parent = node.parentNode;
+        if (!parent || parent.closest('.find-bar') || parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') { return; }
+
+        var text = node.nodeValue;
+        if (!regex.test(text)) { return; }
+        regex.lastIndex = 0;
+
+        var fragment = document.createDocumentFragment();
+        var lastIdx = 0;
+        var m;
+        while ((m = regex.exec(text)) !== null) {
+          if (m.index > lastIdx) {
+            fragment.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+          }
+          var mk = document.createElement('mark');
+          mk.className = 'search-highlight';
+          mk.dataset.matchIndex = String(matchIdx++);
+          mk.textContent = m[0];
+          fragment.appendChild(mk);
+          lastIdx = regex.lastIndex;
+        }
+        if (lastIdx < text.length) {
+          fragment.appendChild(document.createTextNode(text.slice(lastIdx)));
+        }
+        parent.replaceChild(fragment, node);
+      });
+
+      matches = contentEl.querySelectorAll('.search-highlight');
+      if (matches.length > 0) {
+        currentMatch = 0;
+        setActiveMatch(0);
+        findPrevBtn.disabled = false;
+        findNextBtn.disabled = false;
+      } else {
+        findInfo.textContent = 'No results';
+        findPrevBtn.disabled = true;
+        findNextBtn.disabled = true;
+      }
+    }
+
+    function setActiveMatch(idx) {
+      matches.forEach(function(m) { m.classList.remove('active'); });
+      if (matches.length === 0) { return; }
+      currentMatch = idx;
+      var el = matches[currentMatch];
+      el.classList.add('active');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      findInfo.textContent = (currentMatch + 1) + ' of ' + matches.length;
+    }
+
+    function goNext() {
+      if (matches.length === 0) { return; }
+      setActiveMatch((currentMatch + 1) % matches.length);
+    }
+
+    function goPrev() {
+      if (matches.length === 0) { return; }
+      setActiveMatch((currentMatch - 1 + matches.length) % matches.length);
+    }
+
+    var debounceTimer;
+    findInput.addEventListener('input', function() {
+      clearTimeout(debounceTimer);
+      if (originalContentHTML) { contentEl.innerHTML = originalContentHTML; }
+      debounceTimer = setTimeout(function() {
+        originalContentHTML = contentEl.innerHTML;
+        highlightMatches(findInput.value);
+      }, 200);
+    });
+
+    findInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); goNext(); }
+      if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); goPrev(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeFindBar(); }
+    });
+
+    findPrevBtn.addEventListener('click', goPrev);
+    findNextBtn.addEventListener('click', goNext);
+    findCloseBtn.addEventListener('click', closeFindBar);
+
+    document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        openFindBar();
+      }
+      if (e.key === 'Escape' && findBar.classList.contains('visible')) {
+        closeFindBar();
+      }
+    });
   })();
 
 })();
