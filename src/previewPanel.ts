@@ -388,6 +388,8 @@ export class PreviewPanel implements vscode.Disposable {
       }
 
       case 'editSpecitField': {
+        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', true);
+        if (!specitOn) { return; }
         await this.ensureDocumentFresh();
         const fieldName = msg.fieldName as string;
         const newValue = (msg.newValue as string || '').trim();
@@ -400,6 +402,8 @@ export class PreviewPanel implements vscode.Disposable {
       }
 
       case 'changeSpecitStatus': {
+        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', true);
+        if (!specitOn) { return; }
         await this.ensureDocumentFresh();
         const newStatus = (msg.newStatus as string || '').trim();
         if (!newStatus) { return; }
@@ -509,7 +513,8 @@ export class PreviewPanel implements vscode.Disposable {
 
     let docSubtitleHtml = '';
 
-    const specitHeader = parseSpecitHeader(rawMarkdown);
+    const specitEnabled = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', true);
+    const specitHeader = specitEnabled ? parseSpecitHeader(rawMarkdown) : null;
     if (specitHeader) {
       const docType = inferSpecitDocType(this.document.uri.fsPath);
       const statusOptions = STATUS_OPTIONS[docType] ?? STATUS_OPTIONS['Other'];

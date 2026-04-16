@@ -86,6 +86,11 @@
             ".vscode-test"
           ],
           "description": "Folders to exclude from the Markdown Files tree view."
+        },
+        "markdownThreads.enableSpecitRendering": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable SPECIT document rendering (header card, status buttons, inline field editing). When disabled, SPECIT documents render as plain markdown."
         }
       }
     },
