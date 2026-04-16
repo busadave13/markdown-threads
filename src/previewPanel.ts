@@ -388,7 +388,7 @@ export class PreviewPanel implements vscode.Disposable {
       }
 
       case 'editSpecitField': {
-        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', true);
+        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
         if (!specitOn) { return; }
         await this.ensureDocumentFresh();
         const fieldName = msg.fieldName as string;
@@ -402,7 +402,7 @@ export class PreviewPanel implements vscode.Disposable {
       }
 
       case 'changeSpecitStatus': {
-        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', true);
+        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
         if (!specitOn) { return; }
         await this.ensureDocumentFresh();
         const newStatus = (msg.newStatus as string || '').trim();
@@ -513,7 +513,7 @@ export class PreviewPanel implements vscode.Disposable {
 
     let docSubtitleHtml = '';
 
-    const specitEnabled = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', true);
+    const specitEnabled = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
     const specitHeader = specitEnabled ? parseSpecitHeader(rawMarkdown) : null;
     if (specitHeader) {
       const docType = inferSpecitDocType(this.document.uri.fsPath);

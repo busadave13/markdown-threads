@@ -66,6 +66,13 @@ export class SidecarManager {
    * @param origin  Who is triggering the write (so listeners can skip their own changes).
    */
   async writeSidecar(docPath: string, sidecar: SidecarFile, origin: WriteOrigin = 'internal'): Promise<void> {
+    // If all comments have been removed, delete the sidecar file instead of writing an empty one
+    if (sidecar.comments.length === 0) {
+      await this.deleteSidecar(docPath);
+      this._onDidChange.fire({ docPath, origin });
+      return;
+    }
+
     const sidecarPath = this.getSidecarPath(docPath);
     const tempPath = `${sidecarPath}.tmp`;
 
@@ -87,6 +94,16 @@ export class SidecarManager {
 
     // Notify all listeners
     this._onDidChange.fire({ docPath, origin });
+  }
+
+  /**
+   * Delete the sidecar file for a markdown document if it exists.
+   */
+  async deleteSidecar(docPath: string): Promise<void> {
+    const sidecarPath = this.getSidecarPath(docPath);
+    if (fs.existsSync(sidecarPath)) {
+      await fs.promises.unlink(sidecarPath);
+    }
   }
 
   /**

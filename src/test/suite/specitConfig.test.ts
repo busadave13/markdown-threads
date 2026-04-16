@@ -28,9 +28,9 @@ suite('Configuration: enableSpecitRendering', () => {
     assert.strictEqual(setting.type, 'boolean');
   });
 
-  test('setting defaults to true', () => {
+  test('setting defaults to false', () => {
     const setting = pkgJson.contributes.configuration.properties['markdownThreads.enableSpecitRendering'];
-    assert.strictEqual(setting.default, true);
+    assert.strictEqual(setting.default, false);
   });
 
   test('setting has a description', () => {

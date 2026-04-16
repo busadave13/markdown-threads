@@ -365,8 +365,9 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(mgr.sidecarExists(docPath), false);
 
-    // Write a sidecar
+    // Write a sidecar with at least one thread (empty comments auto-deletes)
     const sc = emptySidecar('design.md');
+    mgr.addThread(sc, threadStub());
     await mgr.writeSidecar(docPath, sc);
 
     assert.strictEqual(mgr.sidecarExists(docPath), true);
@@ -497,6 +498,102 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(previewEvents.length, 1);
     assert.strictEqual(previewEvents[0], 'preview');
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ── deleteSidecar ──────────────────────────────────────────────────
+
+  test('deleteSidecar removes existing sidecar file', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    // Write a sidecar so it exists
+    const sc = emptySidecar('doc.md');
+    mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+    assert.strictEqual(mgr.sidecarExists(docPath), true);
+
+    await mgr.deleteSidecar(docPath);
+    assert.strictEqual(mgr.sidecarExists(docPath), false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('deleteSidecar is a no-op when file does not exist', async () => {
+    const mgr = makeSidecar();
+    // Should not throw
+    await mgr.deleteSidecar(path.join(os.tmpdir(), 'nonexistent-doc.md'));
+  });
+
+  // ── writeSidecar auto-delete on empty comments ──────────────────────
+
+  test('writeSidecar deletes sidecar file when comments array is empty', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    // Create a sidecar with a thread
+    const sc = emptySidecar('doc.md');
+    mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+    assert.strictEqual(mgr.sidecarExists(docPath), true);
+
+    // Remove all threads and write — should delete the file
+    sc.comments = [];
+    await mgr.writeSidecar(docPath, sc, 'preview');
+    assert.strictEqual(mgr.sidecarExists(docPath), false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('writeSidecar fires onDidChange when deleting empty sidecar', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    // Create a sidecar with a thread
+    const sc = emptySidecar('doc.md');
+    mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+
+    // Listen for change event
+    let firedOrigin: string | null = null;
+    let firedDocPath: string | null = null;
+    mgr.onDidChange((e) => {
+      firedOrigin = e.origin;
+      firedDocPath = e.docPath;
+    });
+
+    // Remove all threads and write
+    sc.comments = [];
+    await mgr.writeSidecar(docPath, sc, 'preview');
+
+    assert.strictEqual(firedOrigin, 'preview');
+    assert.strictEqual(firedDocPath, docPath);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('deleteThread + writeSidecar deletes file when last thread removed', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    const sc = emptySidecar('doc.md');
+    const thread = mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+    assert.strictEqual(mgr.sidecarExists(docPath), true);
+
+    // Delete the only thread, then write
+    mgr.deleteThread(sc, thread.id);
+    await mgr.writeSidecar(docPath, sc, 'preview');
+    assert.strictEqual(mgr.sidecarExists(docPath), false);
+
+    // readSidecar should return null
+    const result = await mgr.readSidecar(docPath);
+    assert.strictEqual(result, null);
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
