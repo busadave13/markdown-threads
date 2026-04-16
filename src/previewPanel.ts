@@ -287,6 +287,14 @@ export class PreviewPanel implements vscode.Disposable {
         await this.update();
         break;
       }
+
+      case 'openExternal': {
+        const url = msg.url as string;
+        if (url && /^https?:\/\//i.test(url)) {
+          vscode.commands.executeCommand('simpleBrowser.show', url);
+        }
+        break;
+      }
     }
   }
 
@@ -848,16 +856,84 @@ ul, ol { padding-left: 2em; }
 
 /* ── mermaid diagrams ─────────────────────────── */
 
-pre.mermaid {
-  background: transparent;
-  border: none;
-  text-align: center;
-  padding: 16px 0;
+.mermaid-frame {
+  margin: 20px 0;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 8px;
+  background: var(--vscode-sideBar-background, rgba(128, 128, 128, 0.04));
+  overflow: hidden;
 }
 
-pre.mermaid svg {
-  max-width: 100%;
-  height: auto;
+.mermaid-frame-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.06));
+  font-size: 0.82em;
+  user-select: none;
+}
+
+.mermaid-frame-toolbar .diagram-label {
+  flex: 1;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.mermaid-frame-toolbar .zoom-level {
+  min-width: 40px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.mermaid-frame-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground, inherit);
+  cursor: pointer;
+  font-size: 1em;
+}
+
+.mermaid-frame-toolbar button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.12));
+}
+
+.mermaid-frame-viewport {
+  position: relative;
+  overflow: hidden;
+  height: 400px;
+  cursor: grab;
+}
+
+.mermaid-frame-viewport.panning {
+  cursor: grabbing;
+}
+
+.mermaid-frame-content {
+  transform-origin: 0 0;
+  will-change: transform;
+  display: inline-block;
+  min-width: 100%;
+  text-align: center;
+}
+
+.mermaid-frame .mermaid {
+  margin: 16px;
+  text-align: center;
+}
+
+.mermaid:not(.mermaid-frame .mermaid) {
+  margin: 16px 0;
+  text-align: center;
 }
 `;
 
@@ -898,6 +974,159 @@ const PREVIEW_JS = /* js */ `
         securityLevel: 'loose',
       });
     }
+  })();
+
+  // ── external link handling ─────────────────
+  (function initLinks() {
+    // Rewrite external links to data attributes to avoid VS Code interception
+    document.querySelectorAll('#content a[href]').forEach(function(a) {
+      var href = a.getAttribute('href');
+      if (href && /^https?:[/][/]/i.test(href)) {
+        a.setAttribute('data-external-url', href);
+        a.setAttribute('href', '#');
+      }
+    });
+
+    // Intercept clicks on external links
+    content.addEventListener('click', function(e) {
+      var anchor = e.target.closest('a');
+      if (!anchor) { return; }
+      var externalUrl = anchor.getAttribute('data-external-url');
+      if (externalUrl) {
+        e.preventDefault();
+        vscode.postMessage({ command: 'openExternal', url: externalUrl });
+      }
+    });
+  })();
+
+  // ── mermaid diagram zoom & pan ─────────────
+  var diagramStates = {};
+
+  function getDiagramState(dId) {
+    if (!diagramStates[dId]) {
+      diagramStates[dId] = { scale: 1, translateX: 0, translateY: 0 };
+    }
+    return diagramStates[dId];
+  }
+
+  function applyTransform(dId) {
+    var s = getDiagramState(dId);
+    var el = document.getElementById('content-' + dId);
+    if (el) {
+      var svg = el.querySelector('svg');
+      if (svg) {
+        if (!s.origWidth) {
+          var vb = svg.getAttribute('viewBox');
+          if (vb) {
+            var parts = vb.split(/[\\s,]+/);
+            s.origWidth = parseFloat(parts[2]) || 0;
+            s.origHeight = parseFloat(parts[3]) || 0;
+          }
+          if (!s.origWidth || !s.origHeight) {
+            var rect = svg.getBoundingClientRect();
+            s.origWidth = s.origWidth || rect.width || 400;
+            s.origHeight = s.origHeight || rect.height || 300;
+          }
+        }
+        var newW = s.origWidth * s.scale;
+        var newH = s.origHeight * s.scale;
+        svg.setAttribute('width', newW + 'px');
+        svg.setAttribute('height', newH + 'px');
+        svg.style.width = newW + 'px';
+        svg.style.height = newH + 'px';
+        svg.style.maxWidth = 'none';
+      }
+      el.style.transform = 'translate(' + s.translateX + 'px, ' + s.translateY + 'px)';
+    }
+    var label = document.getElementById('zoom-label-' + dId);
+    if (label) {
+      label.textContent = Math.round(s.scale * 100) + '%';
+    }
+  }
+
+  function zoomDiagram(dId, direction) {
+    var s = getDiagramState(dId);
+    var newScale = s.scale + direction * 0.15;
+    newScale = Math.max(0.25, Math.min(4, newScale));
+    s.scale = Math.round(newScale * 100) / 100;
+    applyTransform(dId);
+  }
+
+  function resetDiagram(dId) {
+    var s = getDiagramState(dId);
+    s.scale = 1;
+    s.translateX = 0;
+    s.translateY = 0;
+    applyTransform(dId);
+  }
+
+  // Expose to global scope for onclick attributes in toolbar buttons
+  window.zoomDiagram = zoomDiagram;
+  window.resetDiagram = resetDiagram;
+
+  // Attach wheel + drag handlers to all diagram viewports
+  (function() {
+    function setupViewport(vp) {
+      var dId = vp.id.replace('viewport-', '');
+      var dragging = false;
+      var lastX = 0, lastY = 0;
+
+      vp.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        var s = getDiagramState(dId);
+        var rect = vp.getBoundingClientRect();
+        var mouseX = e.clientX - rect.left;
+        var mouseY = e.clientY - rect.top;
+
+        var oldScale = s.scale;
+        var delta = e.deltaY < 0 ? 0.15 : -0.15;
+        var newScale = Math.max(0.25, Math.min(4, oldScale + delta));
+        newScale = Math.round(newScale * 100) / 100;
+
+        // Zoom towards the cursor position
+        var ratio = newScale / oldScale;
+        s.translateX = mouseX - ratio * (mouseX - s.translateX);
+        s.translateY = mouseY - ratio * (mouseY - s.translateY);
+        s.scale = newScale;
+        applyTransform(dId);
+      }, { passive: false });
+
+      vp.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) { return; }
+        dragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        vp.classList.add('panning');
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (!dragging) { return; }
+        var s = getDiagramState(dId);
+        s.translateX += e.clientX - lastX;
+        s.translateY += e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        applyTransform(dId);
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (dragging) {
+          dragging = false;
+          vp.classList.remove('panning');
+        }
+      });
+
+      // Double-click to reset
+      vp.addEventListener('dblclick', function() {
+        resetDiagram(dId);
+      });
+    }
+
+    // Wait for Mermaid to finish rendering SVGs
+    setTimeout(function() {
+      document.querySelectorAll('.mermaid-frame-viewport').forEach(setupViewport);
+    }, 500);
   })();
 
   // ── sidebar resize logic ───────────────────
