@@ -17,24 +17,13 @@
     {
       "label": "Build VSIX",
       "type": "shell",
-      "command": "rm -f *.vsix && npx @vscode/vsce package",
+      "command": "Remove-Item -Force *.vsix -ErrorAction SilentlyContinue; npx @vscode/vsce package",
       "problemMatcher": "$tsc",
       "presentation": {
         "reveal": "always",
         "panel": "shared"
       },
       "group": "build"
-    },
-    {
-      "label": "Publish Extension",
-      "type": "shell",
-      "command": "npx @vscode/vsce publish",
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "dependsOn": "Build VSIX"
     }
   ]
 }

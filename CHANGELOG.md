@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 — Exclude Folders from Tree View
+
+- **Configurable folder exclusions** — New `markdownThreads.excludeFolders` setting to hide markdown files from specified folders (e.g., `node_modules`, `.github`, `.git`, `out`, `dist`, `bin`, `obj`, `.vscode`) in the Markdown Files sidebar. The tree view and folder filter picker both respect the setting. Changes take effect immediately.
+
 ## 0.2.1 — Documentation Update
 
 - **Improved README** — Reorganized features into categories, added quick start guide, documented orphan handling and reparenting

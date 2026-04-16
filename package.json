@@ -68,7 +68,26 @@
     ],
     "configuration": {
       "title": "Markdown Threads",
-      "properties": {}
+      "properties": {
+        "markdownThreads.excludeFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            ".github",
+            ".git",
+            "out",
+            "dist",
+            "bin",
+            "obj",
+            ".vscode",
+            ".vscode-test"
+          ],
+          "description": "Folders to exclude from the Markdown Files tree view."
+        }
+      }
     },
     "menus": {
       "editor/title": [

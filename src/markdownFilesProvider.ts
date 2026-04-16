@@ -52,6 +52,22 @@ export class FolderItem extends vscode.TreeItem {
 type TreeItem = MarkdownFileItem | FolderItem;
 
 /**
+ * Builds a glob exclude pattern from an array of folder names.
+ * Returns a brace-expanded glob string or undefined if the array is empty.
+ */
+export function buildExcludePattern(folders: string[]): string | undefined {
+  const filtered = folders.filter(f => f.length > 0);
+  if (filtered.length === 0) {
+    return undefined;
+  }
+  if (filtered.length === 1) {
+    return `**/${filtered[0]}/**`;
+  }
+  const parts = filtered.map(f => `**/${f}/**`);
+  return `{${parts.join(',')}}`;
+}
+
+/**
  * Provides markdown files for the sidebar tree view.
  */
 export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> {
@@ -60,6 +76,7 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
 
   private fileWatcher: vscode.FileSystemWatcher | undefined;
   private sidecarWatcher: vscode.FileSystemWatcher | undefined;
+  private configWatcher: vscode.Disposable | undefined;
   private selectedFolder: string | undefined; // undefined = show all folders
 
   constructor() {
@@ -74,6 +91,13 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     this.sidecarWatcher.onDidCreate(() => this.refresh());
     this.sidecarWatcher.onDidDelete(() => this.refresh());
     this.sidecarWatcher.onDidChange(() => this.refresh());
+
+    // Refresh tree when exclude folders setting changes
+    this.configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('markdownThreads.excludeFolders')) {
+        this.refresh();
+      }
+    });
   }
 
   /**
@@ -86,7 +110,9 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     }
 
     // Find all directories containing markdown files
-    const mdFiles = await vscode.workspace.findFiles('**/*.md');
+    const excludeFolders = vscode.workspace.getConfiguration('markdownThreads').get<string[]>('excludeFolders', []);
+    const excludePattern = buildExcludePattern(excludeFolders);
+    const mdFiles = await vscode.workspace.findFiles('**/*.md', excludePattern);
     const folders = new Set<string>();
     folders.add(''); // Root option (show all)
 
@@ -164,8 +190,10 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
       ? `${this.selectedFolder}/**/*.md`
       : '**/*.md';
 
-    // Find markdown files (filtered by folder if selected)
-    let mdFiles = await vscode.workspace.findFiles(searchPattern);
+    // Find markdown files (filtered by folder if selected, excluding configured folders)
+    const excludeFolders = vscode.workspace.getConfiguration('markdownThreads').get<string[]>('excludeFolders', []);
+    const excludePattern = buildExcludePattern(excludeFolders);
+    let mdFiles = await vscode.workspace.findFiles(searchPattern, excludePattern);
 
     // If a folder is selected, also filter to ensure files are within that folder
     if (this.selectedFolder) {
@@ -236,6 +264,7 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
   dispose(): void {
     this.fileWatcher?.dispose();
     this.sidecarWatcher?.dispose();
+    this.configWatcher?.dispose();
     this._onDidChangeTreeData.dispose();
   }
 }
