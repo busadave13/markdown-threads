@@ -6,6 +6,7 @@ import { anchorEngine } from './anchorEngine';
 import { gitService } from './gitService';
 import type { CommentThread as AppCommentThread } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
+import { findSelectionInRawMarkdown } from './utils/markdown';
 
 /**
  * Manages a WebView panel that renders the markdown document
@@ -173,28 +174,14 @@ export class PreviewPanel implements vscode.Disposable {
         const author = await gitService.getUserName();
         const rawMarkdown = this.document.getText().replace(/\r\n/g, '\n');
 
-        // Find the selected text in raw markdown, preferring the occurrence nearest contentOffset
-        let bestStart = -1;
-        let bestDistance = Infinity;
-        let searchFrom = 0;
-        while (searchFrom <= rawMarkdown.length - selectedText.length) {
-          const idx = rawMarkdown.indexOf(selectedText, searchFrom);
-          if (idx === -1) { break; }
-          const distance = Math.abs(idx - contentOffset);
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            bestStart = idx;
-          }
-          searchFrom = idx + 1;
-        }
-
-        if (bestStart === -1) {
+        const match = findSelectionInRawMarkdown(selectedText, rawMarkdown, contentOffset);
+        if (!match) {
           vscode.window.showErrorMessage('Could not find selected text in document');
           return;
         }
 
-        const endOffset = bestStart + selectedText.length;
-        const anchor = anchorEngine.createAnchor(selectedText, bestStart, endOffset, rawMarkdown);
+        const endOffset = match.start + match.text.length;
+        const anchor = anchorEngine.createAnchor(match.text, match.start, endOffset, rawMarkdown);
 
         let sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) {
@@ -700,26 +687,6 @@ const PREVIEW_JS = /* js */ `
       var dId = vp.id.replace('viewport-', '');
       var dragging = false;
       var lastX = 0, lastY = 0;
-
-      vp.addEventListener('wheel', function(e) {
-        e.preventDefault();
-        var s = getDiagramState(dId);
-        var rect = vp.getBoundingClientRect();
-        var mouseX = e.clientX - rect.left;
-        var mouseY = e.clientY - rect.top;
-
-        var oldScale = s.scale;
-        var delta = e.deltaY < 0 ? 0.15 : -0.15;
-        var newScale = Math.max(0.25, Math.min(4, oldScale + delta));
-        newScale = Math.round(newScale * 100) / 100;
-
-        // Zoom towards the cursor position
-        var ratio = newScale / oldScale;
-        s.translateX = mouseX - ratio * (mouseX - s.translateX);
-        s.translateY = mouseY - ratio * (mouseY - s.translateY);
-        s.scale = newScale;
-        applyTransform(dId);
-      }, { passive: false });
 
       vp.addEventListener('mousedown', function(e) {
         if (e.button !== 0) { return; }

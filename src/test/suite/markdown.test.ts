@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { parseMarkdownSections, findSectionBySlug, findSectionByLine, hasContentDrifted } from '../../utils/markdown';
+import { parseMarkdownSections, findSectionBySlug, findSectionByLine, hasContentDrifted, findSelectionInRawMarkdown } from '../../utils/markdown';
 
 suite('Markdown Utils Test Suite', () => {
   test('parseMarkdownSections extracts sections correctly', () => {
@@ -190,5 +190,100 @@ Conclusion content.`;
 
   test('findSectionByLine returns undefined for empty sections list', () => {
     assert.strictEqual(findSectionByLine([], 0), undefined);
+  });
+});
+
+suite('findSelectionInRawMarkdown Test Suite', () => {
+  test('exact match returns correct start and text', () => {
+    const raw = '# Title\n\nSome paragraph text here.';
+    const result = findSelectionInRawMarkdown('paragraph text', raw, 10);
+    assert.ok(result);
+    assert.strictEqual(result!.text, 'paragraph text');
+    assert.strictEqual(result!.start, raw.indexOf('paragraph text'));
+  });
+
+  test('exact match prefers occurrence nearest contentOffset', () => {
+    const raw = 'hello world\nhello world';
+    const result = findSelectionInRawMarkdown('hello world', raw, 12);
+    assert.ok(result);
+    assert.strictEqual(result!.start, 12); // second occurrence
+  });
+
+  test('matches text across unordered list items with dash markers', () => {
+    const raw = '# Goals\n\n- Reduce startup overhead\n- Remove hand-maintained stubs';
+    const selected = 'Reduce startup overhead\nRemove hand-maintained stubs';
+    const result = findSelectionInRawMarkdown(selected, raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, '- Reduce startup overhead\n- Remove hand-maintained stubs');
+    assert.strictEqual(result!.start, raw.indexOf('- Reduce'));
+  });
+
+  test('matches text across unordered list items with asterisk markers', () => {
+    const raw = '* Item A\n* Item B';
+    const selected = 'Item A\nItem B';
+    const result = findSelectionInRawMarkdown(selected, raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, '* Item A\n* Item B');
+  });
+
+  test('matches text across ordered list items', () => {
+    const raw = '1. First step\n2. Second step\n3. Third step';
+    const selected = 'First step\nSecond step\nThird step';
+    const result = findSelectionInRawMarkdown(selected, raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, '1. First step\n2. Second step\n3. Third step');
+  });
+
+  test('matches text across blockquote lines', () => {
+    const raw = '> Line one\n> Line two';
+    const selected = 'Line one\nLine two';
+    const result = findSelectionInRawMarkdown(selected, raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, '> Line one\n> Line two');
+  });
+
+  test('matches text with indented list markers', () => {
+    const raw = '  - Nested A\n  - Nested B';
+    const selected = 'Nested A\nNested B';
+    const result = findSelectionInRawMarkdown(selected, raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, '  - Nested A\n  - Nested B');
+  });
+
+  test('returns null when text is not found at all', () => {
+    const raw = '# Title\n\nSome content.';
+    const result = findSelectionInRawMarkdown('nonexistent text', raw, 0);
+    assert.strictEqual(result, null);
+  });
+
+  test('returns null for empty selected text', () => {
+    const raw = '# Title\n\nContent.';
+    const result = findSelectionInRawMarkdown('', raw, 0);
+    assert.strictEqual(result, null);
+  });
+
+  test('handles special regex characters in selected text', () => {
+    const raw = '- Use regex (.*) pattern\n- Check [brackets]';
+    const selected = 'Use regex (.*) pattern\nCheck [brackets]';
+    const result = findSelectionInRawMarkdown(selected, raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, '- Use regex (.*) pattern\n- Check [brackets]');
+  });
+
+  test('single line in a list still uses exact match', () => {
+    const raw = '- Single item in a list';
+    // Selecting text within a single list item — this text appears verbatim
+    const result = findSelectionInRawMarkdown('Single item in a list', raw, 0);
+    assert.ok(result);
+    assert.strictEqual(result!.text, 'Single item in a list');
+  });
+
+  test('fallback prefers match nearest contentOffset', () => {
+    const raw = '- Alpha\n- Beta\n\n- Alpha\n- Beta';
+    const selected = 'Alpha\nBeta';
+    const result = findSelectionInRawMarkdown(selected, raw, 20);
+    assert.ok(result);
+    // Should prefer the second occurrence (closer to offset 20)
+    assert.ok(result!.start > 10, 'should match second occurrence');
   });
 });
