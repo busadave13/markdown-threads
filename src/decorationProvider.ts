@@ -8,18 +8,12 @@ import { anchorEngine } from './anchorEngine';
  */
 export class DecorationProvider implements vscode.Disposable {
   private openDecoration: vscode.TextEditorDecorationType;
-  private resolvedDecoration: vscode.TextEditorDecorationType;
   private staleDecoration: vscode.TextEditorDecorationType;
   private disposables: vscode.Disposable[] = [];
 
   constructor(extensionPath: string) {
     this.openDecoration = vscode.window.createTextEditorDecorationType({
       gutterIconPath: path.join(extensionPath, 'media', 'comment-bubble.svg'),
-      gutterIconSize: 'contain',
-    });
-
-    this.resolvedDecoration = vscode.window.createTextEditorDecorationType({
-      gutterIconPath: path.join(extensionPath, 'media', 'comment-resolved.svg'),
       gutterIconSize: 'contain',
     });
 
@@ -30,7 +24,6 @@ export class DecorationProvider implements vscode.Disposable {
 
     this.disposables.push(
       this.openDecoration,
-      this.resolvedDecoration,
       this.staleDecoration
     );
   }
@@ -60,7 +53,6 @@ export class DecorationProvider implements vscode.Disposable {
     const rawText = document.getText();
     
     const openRanges: vscode.DecorationOptions[] = [];
-    const resolvedRanges: vscode.DecorationOptions[] = [];
     const staleRanges: vscode.DecorationOptions[] = [];
 
     for (const thread of sidecar.comments) {
@@ -93,15 +85,12 @@ export class DecorationProvider implements vscode.Disposable {
 
       if (thread.status === 'stale') {
         staleRanges.push(decoration);
-      } else if (thread.status === 'resolved') {
-        resolvedRanges.push(decoration);
       } else {
         openRanges.push(decoration);
       }
     }
 
     editor.setDecorations(this.openDecoration, openRanges);
-    editor.setDecorations(this.resolvedDecoration, resolvedRanges);
     editor.setDecorations(this.staleDecoration, staleRanges);
   }
 
@@ -110,7 +99,6 @@ export class DecorationProvider implements vscode.Disposable {
    */
   clearDecorations(editor: vscode.TextEditor): void {
     editor.setDecorations(this.openDecoration, []);
-    editor.setDecorations(this.resolvedDecoration, []);
     editor.setDecorations(this.staleDecoration, []);
   }
 

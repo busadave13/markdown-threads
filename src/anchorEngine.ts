@@ -127,10 +127,6 @@ export class AnchorEngine {
     let anchorsMoved = false;
 
     for (const thread of threads) {
-      if (thread.status === 'resolved') {
-        continue; // Don't touch resolved threads
-      }
-
       const result = this.anchorComment(thread.anchor, currentSource);
 
       if (!result) {

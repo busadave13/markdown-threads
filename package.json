@@ -1,7 +1,7 @@
 {
   "name": "markdown-threads",
   "displayName": "Markdown Threads",
-  "description": "Inline feedback and comments on markdown files stored in Git, with automatic PR creation",
+  "description": "Inline feedback and comments on markdown files stored in Git",
   "version": "0.2.1",
   "publisher": "busa-dave-13",
   "license": "MIT",
@@ -14,8 +14,7 @@
     "markdown",
     "review",
     "comments",
-    "feedback",
-    "pull request"
+    "feedback"
   ],
   "engines": {
     "vscode": "^1.85.0"
@@ -26,7 +25,6 @@
   "activationEvents": [
     "onLanguage:markdown",
     "onCommand:markdownThreads.openPreview",
-    "onCommand:markdownThreads.publishDrafts",
     "onView:markdownThreads.files"
   ],
   "main": "./out/extension.js",
@@ -50,11 +48,6 @@
     },
     "commands": [
       {
-        "command": "markdownThreads.publishDrafts",
-        "title": "Publish Pending Comments as PR",
-        "category": "Markdown Threads"
-      },
-      {
         "command": "markdownThreads.openPreview",
         "title": "Markdown: Review and Comment",
         "category": "Markdown Threads",
@@ -75,28 +68,7 @@
     ],
     "configuration": {
       "title": "Markdown Threads",
-      "properties": {
-        "markdownThreads.autoOpenPR": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically open browser to PR after creation"
-        },
-        "markdownThreads.branchPrefix": {
-          "type": "string",
-          "default": "doc-comment",
-          "description": "Prefix for branches created when publishing comments"
-        },
-        "markdownThreads.defaultProvider": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "github",
-            "azuredevops"
-          ],
-          "default": "auto",
-          "description": "Git provider for PR creation (auto-detects from remotes)"
-        }
-      }
+      "properties": {}
     },
     "menus": {
       "editor/title": [
@@ -153,8 +125,6 @@
     "typescript": "^5.3.2"
   },
   "dependencies": {
-    "@octokit/rest": "^20.0.2",
-    "azure-devops-node-api": "^12.5.0",
     "markdown-it": "^14.0.0",
     "mermaid": "^11.12.3",
     "simple-git": "^3.21.0",

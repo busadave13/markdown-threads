@@ -16,8 +16,8 @@
     },
     {
       "label": "Build VSIX",
-      "type": "npm",
-      "script": "package",
+      "type": "shell",
+      "command": "rm -f *.vsix && npx @vscode/vsce package",
       "problemMatcher": "$tsc",
       "presentation": {
         "reveal": "always",

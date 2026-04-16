@@ -126,8 +126,6 @@ export class SidecarManager {
       id: uuidv4(),
     };
     thread.thread.push(newEntry);
-    // Mark thread as draft since it has unpublished changes
-    thread.isDraft = true;
     return newEntry;
   }
 
@@ -205,36 +203,6 @@ export class SidecarManager {
     entry.body = newBody;
     entry.edited = new Date().toISOString();
     return entry;
-  }
-
-  /**
-   * Update thread status
-   */
-  updateThreadStatus(sidecar: SidecarFile, threadId: string, status: CommentThread['status']): boolean {
-    const thread = sidecar.comments.find(t => t.id === threadId);
-    if (!thread) {
-      return false;
-    }
-    thread.status = status;
-    // Mark thread as draft since it has unpublished changes
-    thread.isDraft = true;
-    return true;
-  }
-
-  /**
-   * Get all draft (unpublished) threads
-   */
-  getDraftThreads(sidecar: SidecarFile): CommentThread[] {
-    return sidecar.comments.filter(t => t.isDraft);
-  }
-
-  /**
-   * Mark all draft threads as published
-   */
-  markAllPublished(sidecar: SidecarFile): void {
-    sidecar.comments.forEach(t => {
-      t.isDraft = false;
-    });
   }
 
   /**

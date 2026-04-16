@@ -4,28 +4,27 @@
   "comments": [
     {
       "anchor": {
-        "selectedText": "This extension bridges the gap by providing inli",
+        "selectedText": "Purpose",
         "textContext": {
-          "prefix": " inline comments (messy, no threading)\n\n",
-          "suffix": "ne, threaded comments anchored to specif"
+          "prefix": "Goals\n\n1. **Rich preview experience** — ",
+          "suffix": "-built WebView sidebar for commenting on"
         },
         "markdownRange": {
-          "startOffset": 644,
-          "endOffset": 692
+          "startOffset": 840,
+          "endOffset": 847
         }
       },
       "status": "open",
-      "isDraft": true,
       "thread": [
         {
-          "id": "ffeb2a43-e02f-4b20-a8cf-cf8fd93885f9",
+          "id": "7497a7e0-1076-4ee7-9cb9-9588588e995d",
           "author": "Dave Harding",
-          "body": "fdsfds",
-          "created": "2026-04-16T17:55:53.181Z",
+          "body": "fsdfds",
+          "created": "2026-04-16T18:47:22.155Z",
           "edited": null
         }
       ],
-      "id": "f66652ad-e1ca-4a25-b882-5f0ec44d6d65"
+      "id": "9ae69051-5b89-4bdf-8c41-35ff3284d981"
     }
   ]
 }

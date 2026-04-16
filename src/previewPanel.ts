@@ -5,8 +5,6 @@ import { sidecarManager } from './sidecarManager';
 import type { SidecarChangeEvent } from './sidecarManager';
 import { anchorEngine } from './anchorEngine';
 import { gitService } from './gitService';
-import { gitHubProvider } from './providers/githubProvider';
-import { adoProvider } from './providers/adoProvider';
 import { slugify } from './utils/hash';
 import { markdownItMermaid } from './utils/markdownItMermaid';
 import type { CommentThread as AppCommentThread } from './models/types';
@@ -198,7 +196,6 @@ export class PreviewPanel implements vscode.Disposable {
         sidecarManager.addThread(sidecar, {
           anchor,
           status: 'open',
-          isDraft: true,
           thread: [{ id: uuidv4(), author, body, created: now, edited: null }],
         });
 
@@ -216,13 +213,6 @@ export class PreviewPanel implements vscode.Disposable {
         const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) { return; }
 
-        // Block reply on resolved threads
-        const replyThread = sidecar.comments.find(t => t.id === threadId);
-        if (replyThread && replyThread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot reply to a resolved thread. Reopen it first.');
-          return;
-        }
-
         sidecarManager.addReply(sidecar, threadId, {
           author,
           body,
@@ -230,28 +220,6 @@ export class PreviewPanel implements vscode.Disposable {
           edited: null,
         });
 
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'resolveThread': {
-        const threadId = msg.threadId as string;
-        if (!threadId) { return; }
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        sidecarManager.updateThreadStatus(sidecar, threadId, 'resolved');
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'reopenThread': {
-        const threadId = msg.threadId as string;
-        if (!threadId) { return; }
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        sidecarManager.updateThreadStatus(sidecar, threadId, 'open');
         await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
         await this.update();
         break;
@@ -265,11 +233,6 @@ export class PreviewPanel implements vscode.Disposable {
         if (!sidecar) { return; }
         const thread = sidecar.comments.find(t => t.id === threadId);
         if (!thread) { return; }
-        // Block delete on resolved threads
-        if (thread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot delete a resolved thread. Reopen it first.');
-          return;
-        }
         // Only the thread creator (first comment author) may delete the thread
         if (thread.thread[0]?.author !== currentUser) {
           vscode.window.showWarningMessage('You can only delete threads you created.');
@@ -290,11 +253,6 @@ export class PreviewPanel implements vscode.Disposable {
         if (!sidecar) { return; }
         const thread = sidecar.comments.find(t => t.id === threadId);
         if (!thread) { return; }
-        // Block delete on resolved threads
-        if (thread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot delete a comment in a resolved thread. Reopen it first.');
-          return;
-        }
         const entry = thread.thread.find(c => c.id === commentId);
         if (!entry) { return; }
         // Only the comment author may delete their own comment
@@ -308,25 +266,6 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
 
-      case 'toggleReaction': {
-        const threadId = msg.threadId as string;
-        const commentId = msg.commentId as string;
-        if (!threadId || !commentId) { return; }
-        const currentUser = await gitService.getUserName();
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        sidecarManager.toggleReaction(sidecar, threadId, commentId, currentUser);
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'publishDrafts': {
-        await this.handlePublishFromPreview();
-        await this.update();
-        break;
-      }
-
       case 'editComment': {
         const threadId = msg.threadId as string;
         const commentId = msg.commentId as string;
@@ -335,13 +274,8 @@ export class PreviewPanel implements vscode.Disposable {
         const currentUser = await gitService.getUserName();
         const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) { return; }
-        // Block edit on resolved threads
         const editThread = sidecar.comments.find(t => t.id === threadId);
         if (!editThread) { return; }
-        if (editThread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot edit a comment in a resolved thread. Reopen it first.');
-          return;
-        }
         // Verify ownership
         const editEntry = editThread.thread.find(c => c.id === commentId);
         if (!editEntry || editEntry.author !== currentUser) {
@@ -432,7 +366,6 @@ export class PreviewPanel implements vscode.Disposable {
         selectedText: t.anchor.selectedText,
         occurrenceIndex: sameTextBefore,
         status: t.status,
-        isDraft: t.isDraft,
         color: t.color,
         thread: t.thread,
         startOffset: t.anchor.markdownRange.startOffset,
@@ -467,9 +400,8 @@ export class PreviewPanel implements vscode.Disposable {
       selectedText: string;
       occurrenceIndex: number;
       status: string;
-      isDraft: boolean;
       color?: string;
-      thread: Array<{ id: string; author: string; body: string; created: string; edited: string | null; reactions?: string[] }>;
+      thread: Array<{ id: string; author: string; body: string; created: string; edited: string | null }>;
       startOffset: number;
     }>,
     currentUser: string,
@@ -499,11 +431,9 @@ ${PREVIEW_CSS}
     <div id="resize-handle" title="Drag to resize sidebar"></div>
     <div id="sidebar">
       <div class="sidebar-header">
-        <span>Threads <span id="thread-count-badge" class="thread-count-badge"></span></span>
-        <button id="publish-btn" class="publish-btn" style="display:none" title="Publish draft comments as PR">Publish</button>
+        <span>Comments <span id="thread-count-badge" class="thread-count-badge"></span></span>
       </div>
       <div id="sidebar-content"></div>
-      <div id="sidebar-stats"></div>
     </div>
   </div>
   <div id="comment-toolbar">
@@ -516,92 +446,6 @@ ${PREVIEW_JS}
   </script>
 </body>
 </html>`;
-  }
-
-  // ───────────────── publish from preview ─────────────────
-
-  private async handlePublishFromPreview(): Promise<void> {
-    const docPath = this.document.uri.fsPath;
-    const sidecar = await sidecarManager.readSidecar(docPath);
-
-    if (!sidecar) {
-      vscode.window.showInformationMessage('No comments to publish');
-      return;
-    }
-
-    const draftThreads = sidecarManager.getDraftThreads(sidecar);
-    if (draftThreads.length === 0) {
-      vscode.window.showInformationMessage('No draft comments to publish');
-      return;
-    }
-
-    const config = vscode.workspace.getConfiguration('markdownThreads');
-    const defaultProvider = config.get<string>('defaultProvider', 'auto');
-
-    let providerInfo = await gitService.detectProvider();
-    if (defaultProvider !== 'auto' && providerInfo) {
-      providerInfo = { ...providerInfo, provider: defaultProvider as 'github' | 'azuredevops' };
-    }
-
-    if (!providerInfo) {
-      vscode.window.showErrorMessage('Could not detect git provider. Make sure you have a remote configured.');
-      return;
-    }
-
-    const docName = path.basename(docPath);
-    const currentBranch = await gitService.getCurrentBranch();
-    const branchName = await gitService.createCommentBranch(docName);
-
-    if (!branchName) {
-      vscode.window.showErrorMessage('Failed to create branch for comments');
-      return;
-    }
-
-    sidecarManager.markAllPublished(sidecar);
-    await sidecarManager.writeSidecar(docPath, sidecar, 'internal');
-
-    const sidecarPath = sidecarManager.getSidecarPath(docPath);
-    const committed = await gitService.commitSidecarChanges(sidecarPath, docName);
-
-    if (!committed) {
-      vscode.window.showErrorMessage('Failed to commit changes');
-      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-      return;
-    }
-
-    const pushed = await gitService.pushBranch(branchName);
-    if (!pushed) {
-      vscode.window.showErrorMessage('Failed to push branch');
-      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-      return;
-    }
-
-    const baseBranch = await gitService.getDefaultBranch();
-    const title = `Feedback on ${docName}`;
-    const body = `This PR contains ${draftThreads.length} comment thread(s) on ${docName}.\n\nCreated by Markdown Review extension.`;
-
-    let result;
-    if (providerInfo.provider === 'github') {
-      result = await gitHubProvider.createPullRequest(providerInfo, branchName, baseBranch, title, body);
-    } else if (providerInfo.provider === 'azuredevops') {
-      result = await adoProvider.createPullRequest(providerInfo, branchName, baseBranch, title, body);
-    } else {
-      vscode.window.showErrorMessage('Unsupported git provider');
-      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-      return;
-    }
-
-    if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-
-    if (result.success && result.prUrl) {
-      const autoOpen = config.get<boolean>('autoOpenPR', true);
-      if (autoOpen) {
-        vscode.env.openExternal(vscode.Uri.parse(result.prUrl));
-      }
-      vscode.window.showInformationMessage(`PR created: ${result.prUrl}`);
-    } else {
-      vscode.window.showErrorMessage(`Failed to create PR: ${result.error}`);
-    }
   }
 
   // ───────────────── dispose ─────────────────
@@ -714,24 +558,6 @@ body.resizing {
   padding: 1px 7px;
   border-radius: 8px;
   margin-left: 6px;
-}
-
-.publish-btn {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 3px;
-  border: none;
-  cursor: pointer;
-  color: var(--vscode-button-foreground, #fff);
-  background: var(--vscode-button-background, #0e639c);
-}
-.publish-btn:hover {
-  background: var(--vscode-button-hoverBackground, #1177bb);
-}
-.publish-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 #sidebar-content {
@@ -878,7 +704,6 @@ ul, ol { padding-left: 2em; }
   box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
 }
 .comment-thread-block.stale    { border-left-color: var(--vscode-editorWarning-foreground, #cca700); }
-.comment-thread-block.resolved { border-left-color: var(--vscode-testing-iconPassed, #73c991); opacity: .75; }
 
 .thread-status-label {
   display: flex;
@@ -891,7 +716,6 @@ ul, ol { padding-left: 2em; }
   margin-bottom: 6px;
 }
 .thread-status-label.open     { color: var(--vscode-editorInfo-foreground, #3794ff); }
-.thread-status-label.resolved { color: var(--vscode-testing-iconPassed, #73c991); }
 .thread-status-label.stale    { color: var(--vscode-editorWarning-foreground, #cca700); }
 
 .comment-entry { padding: 6px 0; }
@@ -903,13 +727,6 @@ ul, ol { padding-left: 2em; }
 .comment-header { display: flex; flex-direction: column; gap: 1px; margin-bottom: 2px; }
 .comment-author { font-weight: 600; font-size: 12px; color: var(--vscode-textLink-foreground); }
 .comment-time   { font-size: 11px; color: var(--vscode-descriptionForeground); }
-
-.comment-draft-badge {
-  font-size: 10px; font-weight: 600;
-  color: var(--vscode-editorWarning-foreground, #cca700);
-  background: var(--vscode-editorWarning-background, rgba(204,167,0,.1));
-  padding: 1px 6px; border-radius: 3px;
-}
 
 .comment-body { font-size: 13px; line-height: 1.5; margin-top: 2px; white-space: pre-wrap; }
 
@@ -1004,37 +821,6 @@ ul, ol { padding-left: 2em; }
   text-decoration: underline;
 }
 
-/* ── thumbs-up reaction button ─────────────── */
-
-.reaction-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.15));
-  border: 1px solid var(--vscode-widget-border, rgba(127,127,127,.2));
-  border-radius: 12px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  color: var(--vscode-foreground);
-  line-height: 1.4;
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: normal;
-}
-.reaction-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,.3));
-}
-.reaction-btn.reacted {
-  background: var(--vscode-inputValidation-infoBackground, rgba(30,100,200,.2));
-  border-color: var(--vscode-textLink-foreground);
-}
-.reaction-count {
-  font-weight: 600;
-  min-width: 8px;
-  text-align: center;
-}
-
 /* ── collapsed thread divider ──────────────── */
 
 .collapsed-divider {
@@ -1059,66 +845,6 @@ ul, ol { padding-left: 2em; }
 }
 
 /* ── sidebar statistics chart ─────────────── */
-
-#sidebar-stats {
-  border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.2));
-  padding: 12px;
-  font-size: 12px;
-  flex-shrink: 0;
-}
-.stats-title {
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--vscode-foreground);
-}
-.stats-bar-container {
-  display: flex;
-  height: 16px;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.1));
-}
-.stats-bar-open {
-  background: var(--vscode-charts-blue, #3794ff);
-  transition: width 0.3s ease;
-}
-.stats-bar-resolved {
-  background: var(--vscode-charts-green, #89d185);
-  transition: width 0.3s ease;
-}
-.stats-legend {
-  display: flex;
-  gap: 16px;
-  color: var(--vscode-descriptionForeground);
-}
-.stats-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.stats-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.stats-dot-open {
-  background: var(--vscode-charts-blue, #3794ff);
-}
-.stats-dot-resolved {
-  background: var(--vscode-charts-green, #89d185);
-}
-.stats-dot-stale {
-  background: var(--vscode-charts-yellow, #cca700);
-}
-.stats-bar-stale {
-  background: var(--vscode-charts-yellow, #cca700);
-  transition: width 0.3s ease;
-}
-.stats-count {
-  font-weight: 600;
-}
 
 /* ── mermaid diagrams ─────────────────────────── */
 
@@ -1394,9 +1120,8 @@ const PREVIEW_JS = /* js */ `
       parent.normalize();
     });
 
-    // Apply highlights for each non-resolved thread
+    // Apply highlights for each thread
     threads.forEach(function(thread, threadIndex) {
-      if (thread.status === 'resolved') { return; }
       var color = thread.color || getThreadColor(threadIndex);
       findAndWrapText(thread.selectedText, thread.occurrenceIndex, color, thread.id);
     });
@@ -1539,35 +1264,13 @@ const PREVIEW_JS = /* js */ `
     });
     block.appendChild(excerpt);
 
-    // Status label
+    // Status label (only shown for stale threads)
     var statusLabel = document.createElement('div');
     statusLabel.className = 'thread-status-label ' + status;
-    var statusText = document.createElement('span');
-    var labels = { open: '\\u25CF Open', resolved: '\\u2713 Resolved', stale: '\\u26A0 Text Changed' };
-    statusText.textContent = (labels[status] || status) + (thread.isDraft ? '  (Draft)' : '');
-    statusLabel.appendChild(statusText);
-
-    // Thread-level reaction
-    if (thread.thread.length > 0) {
-      var firstEntry = thread.thread[0];
-      var threadReactions = firstEntry.reactions || [];
-      var threadReactionBtn = document.createElement('button');
-      threadReactionBtn.className = 'reaction-btn' + (threadReactions.includes(currentUser) ? ' reacted' : '');
-      threadReactionBtn.title = threadReactions.length > 0 ? threadReactions.join(', ') : 'Add reaction';
-      var threadThumbsUp = document.createElement('span');
-      threadThumbsUp.textContent = '\\uD83D\\uDC4D';
-      threadReactionBtn.appendChild(threadThumbsUp);
-      if (threadReactions.length > 0) {
-        var threadCount = document.createElement('span');
-        threadCount.className = 'reaction-count';
-        threadCount.textContent = String(threadReactions.length);
-        threadReactionBtn.appendChild(threadCount);
-      }
-      threadReactionBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        vscode.postMessage({ command: 'toggleReaction', threadId: thread.id, commentId: firstEntry.id });
-      });
-      statusLabel.appendChild(threadReactionBtn);
+    if (status === 'stale') {
+      var statusText = document.createElement('span');
+      statusText.textContent = '\\u26A0 Text Changed';
+      statusLabel.appendChild(statusText);
     }
 
     block.appendChild(statusLabel);
@@ -1599,8 +1302,8 @@ const PREVIEW_JS = /* js */ `
       body.textContent = entry.body;
       entryEl.appendChild(body);
 
-      // Per-comment action links (only for the comment author, and only on non-resolved threads)
-      if (entry.author === currentUser && status !== 'resolved') {
+      // Per-comment action links (only for the comment author)
+      if (entry.author === currentUser) {
         var commentActions = document.createElement('div');
         commentActions.className = 'comment-actions';
 
@@ -1681,46 +1384,26 @@ const PREVIEW_JS = /* js */ `
     var actionsBar = document.createElement('div');
     actionsBar.className = 'thread-actions';
 
-    if (status !== 'resolved') {
-      var replyBtn = document.createElement('button');
-      replyBtn.className = 'action-link';
-      replyBtn.textContent = '\\u21A9 Reply';
-      replyBtn.addEventListener('click', function() {
-        var existing = block.querySelector('.comment-form');
-        if (existing) { existing.remove(); return; }
-        var result = createCommentForm({
-          placeholder: 'Write a reply...',
-          submitLabel: 'Reply',
-          onSubmit: function(text) {
-            vscode.postMessage({ command: 'replyComment', threadId: thread.id, body: text });
-          }
-        });
-        block.appendChild(result.form);
-        result.textarea.focus();
+    var replyBtn = document.createElement('button');
+    replyBtn.className = 'action-link';
+    replyBtn.textContent = '\\u21A9 Reply';
+    replyBtn.addEventListener('click', function() {
+      var existing = block.querySelector('.comment-form');
+      if (existing) { existing.remove(); return; }
+      var result = createCommentForm({
+        placeholder: 'Write a reply...',
+        submitLabel: 'Reply',
+        onSubmit: function(text) {
+          vscode.postMessage({ command: 'replyComment', threadId: thread.id, body: text });
+        }
       });
-      actionsBar.appendChild(replyBtn);
-    }
+      block.appendChild(result.form);
+      result.textarea.focus();
+    });
+    actionsBar.appendChild(replyBtn);
 
-    if (status === 'open' || status === 'stale') {
-      var resolveBtn = document.createElement('button');
-      resolveBtn.className = 'action-link';
-      resolveBtn.textContent = '\\u2713 Resolve';
-      resolveBtn.addEventListener('click', function() {
-        vscode.postMessage({ command: 'resolveThread', threadId: thread.id });
-      });
-      actionsBar.appendChild(resolveBtn);
-    } else if (status === 'resolved') {
-      var reopenBtn = document.createElement('button');
-      reopenBtn.className = 'action-link';
-      reopenBtn.textContent = '\\u21BB Reopen';
-      reopenBtn.addEventListener('click', function() {
-        vscode.postMessage({ command: 'reopenThread', threadId: thread.id });
-      });
-      actionsBar.appendChild(reopenBtn);
-    }
-
-    // Delete Thread link — only for the thread creator, and only on non-resolved threads
-    if (status !== 'resolved' && thread.thread.length > 0 && thread.thread[0].author === currentUser) {
+    // Delete Thread link — only for the thread creator
+    if (thread.thread.length > 0 && thread.thread[0].author === currentUser) {
       var deleteThreadLink = document.createElement('button');
       deleteThreadLink.className = 'action-link';
       deleteThreadLink.textContent = '\\u2715 Delete Thread';
@@ -1740,62 +1423,6 @@ const PREVIEW_JS = /* js */ `
     if (!badge) { return; }
     badge.textContent = String(threads.length);
     if (threads.length === 0) { badge.style.display = 'none'; }
-  })();
-
-  // ── publish button ─────────────────────────
-  (function renderPublishButton() {
-    var btn = document.getElementById('publish-btn');
-    if (!btn) { return; }
-    var draftCount = 0;
-    for (var i = 0; i < threads.length; i++) {
-      if (threads[i].isDraft) { draftCount++; }
-    }
-    if (draftCount > 0) {
-      btn.style.display = '';
-      btn.textContent = 'Publish ' + draftCount + ' draft' + (draftCount > 1 ? 's' : '');
-    } else {
-      btn.style.display = 'none';
-    }
-    btn.addEventListener('click', function() {
-      btn.disabled = true;
-      btn.textContent = 'Publishing\\u2026';
-      vscode.postMessage({ command: 'publishDrafts' });
-    });
-  })();
-
-  // ── statistics chart ───────────────────────
-  (function renderStats() {
-    var statsEl = document.getElementById('sidebar-stats');
-    if (!statsEl) { return; }
-
-    var openCount = 0;
-    var resolvedCount = 0;
-    var staleCount = 0;
-    for (var i = 0; i < threads.length; i++) {
-      var t = threads[i];
-      if (t.status === 'resolved') { resolvedCount++; }
-      else if (t.status === 'stale') { staleCount++; }
-      else { openCount++; }
-    }
-    var total = openCount + resolvedCount + staleCount;
-    if (total === 0) { statsEl.style.display = 'none'; return; }
-    statsEl.style.display = '';
-    var openPct = Math.round((openCount / total) * 100);
-    var resolvedPct = Math.round((resolvedCount / total) * 100);
-    var stalePct = 100 - openPct - resolvedPct;
-    var barHtml = '<div class="stats-bar-container">';
-    if (openPct > 0) { barHtml += '<div class="stats-bar-open" style="width:' + openPct + '%"></div>'; }
-    if (resolvedPct > 0) { barHtml += '<div class="stats-bar-resolved" style="width:' + resolvedPct + '%"></div>'; }
-    if (stalePct > 0) { barHtml += '<div class="stats-bar-stale" style="width:' + stalePct + '%"></div>'; }
-    barHtml += '</div>';
-    var legendHtml = '<div class="stats-legend">';
-    legendHtml += '<div class="stats-legend-item"><span class="stats-dot stats-dot-open"></span> Open <span class="stats-count">' + openCount + '</span></div>';
-    legendHtml += '<div class="stats-legend-item"><span class="stats-dot stats-dot-resolved"></span> Resolved <span class="stats-count">' + resolvedCount + '</span></div>';
-    if (staleCount > 0) {
-      legendHtml += '<div class="stats-legend-item"><span class="stats-dot stats-dot-stale"></span> Stale <span class="stats-count">' + staleCount + '</span></div>';
-    }
-    legendHtml += '</div>';
-    statsEl.innerHTML = '<div class="stats-title">Thread Summary</div>' + barHtml + legendHtml;
   })();
 
 })();

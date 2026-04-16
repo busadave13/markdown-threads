@@ -28,7 +28,6 @@ function thread(overrides: Partial<CommentThread> = {}): CommentThread {
     id: overrides.id ?? 'thread-1',
     anchor: overrides.anchor ?? anchorFor('important text'),
     status: overrides.status ?? 'open',
-    isDraft: overrides.isDraft ?? false,
     thread: overrides.thread ?? [
       {
         id: 'entry-1',
@@ -194,18 +193,6 @@ suite('AnchorEngine Test Suite', () => {
     assert.strictEqual(updates[0].newStatus, 'open');
   });
 
-  test('detectStaleThreads skips resolved threads', () => {
-    const engine = new AnchorEngine();
-    const t = thread({
-      status: 'resolved',
-      anchor: anchorFor('important text'),
-    });
-
-    const edited = SAMPLE_MD.replace('important text', 'gone');
-    const { updates } = engine.detectStaleThreads(edited, [t]);
-    assert.strictEqual(updates.length, 0);
-  });
-
   test('detectStaleThreads does not re-report already stale threads', () => {
     const engine = new AnchorEngine();
     const t = thread({
@@ -250,13 +237,11 @@ suite('AnchorEngine Test Suite', () => {
       thread({ id: 't1', status: 'open', anchor: anchorFor('GET /users') }),
       // open, text will be removed → stale
       thread({ id: 't2', status: 'open', anchor: anchorFor('JWT tokens') }),
-      // resolved, text removed → skip (resolved)
-      thread({ id: 't3', status: 'resolved', anchor: anchorFor('important text') }),
       // stale, text present → open
       thread({ id: 't4', status: 'stale', anchor: anchorFor('GET /users') }),
     ];
 
-    const edited = SAMPLE_MD.replace('JWT tokens', 'OAuth2 tokens').replace('important text', 'crucial info');
+    const edited = SAMPLE_MD.replace('JWT tokens', 'OAuth2 tokens');
     const { updates } = engine.detectStaleThreads(edited, threads);
 
     const t2Update = updates.find(u => u.thread.id === 't2');
@@ -267,9 +252,8 @@ suite('AnchorEngine Test Suite', () => {
     assert.ok(t4Update);
     assert.strictEqual(t4Update!.newStatus, 'open');
 
-    // t1 and t3 should not appear in updates
+    // t1 should not appear in updates
     assert.ok(!updates.find(u => u.thread.id === 't1'));
-    assert.ok(!updates.find(u => u.thread.id === 't3'));
   });
 
   // ── Duplicate text handling ──────────────────────────────────────

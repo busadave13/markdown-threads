@@ -45,7 +45,7 @@ export interface CommentEntry {
 }
 
 /** Status of a comment thread */
-export type ThreadStatus = 'open' | 'resolved' | 'stale';
+export type ThreadStatus = 'open' | 'stale';
 
 /** A comment thread anchored to selected text in a document */
 export interface CommentThread {
@@ -55,8 +55,6 @@ export interface CommentThread {
   anchor: CommentAnchor;
   /** Current status of the thread */
   status: ThreadStatus;
-  /** Whether this is a draft (not yet published to PR) */
-  isDraft: boolean;
   /** All comments in this thread */
   thread: CommentEntry[];
   /** Highlight color for the selected text (hex, e.g. "#FFD700") */
@@ -89,31 +87,4 @@ export interface MarkdownSection {
   content: string;
   /** Hash of first 200 chars of content */
   contentHash: string;
-}
-
-/** Git provider type */
-export type GitProvider = 'github' | 'azuredevops' | 'unknown';
-
-/** Result of provider detection */
-export interface ProviderInfo {
-  provider: GitProvider;
-  owner: string;
-  repo: string;
-  remoteUrl: string;
-}
-
-/** PR creation result */
-export interface PRResult {
-  success: boolean;
-  prUrl?: string;
-  prNumber?: number;
-  error?: string;
-}
-
-/** Extension configuration */
-export interface ExtensionConfig {
-  docPaths: string[];
-  autoOpenPR: boolean;
-  branchPrefix: string;
-  defaultProvider: 'auto' | 'github' | 'azuredevops';
 }

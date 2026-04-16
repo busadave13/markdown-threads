@@ -32,7 +32,6 @@ function threadStub(overrides: Partial<Omit<CommentThread, 'id'>> = {}): Omit<Co
   return {
     anchor: makeAnchor(),
     status: 'open',
-    isDraft: true,
     thread: [
       {
         id: 'entry-1',
@@ -270,62 +269,6 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(mgr.editComment(sc, thread.id, 'no-comment', 'x'), null);
   });
-
-  // ── updateThreadStatus ───────────────────────────────────────────
-
-  test('updateThreadStatus changes status', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    const thread = mgr.addThread(sc, threadStub());
-
-    assert.strictEqual(thread.status, 'open');
-    const ok = mgr.updateThreadStatus(sc, thread.id, 'resolved');
-    assert.strictEqual(ok, true);
-    assert.strictEqual(thread.status, 'resolved');
-  });
-
-  test('updateThreadStatus returns false for unknown id', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-
-    assert.strictEqual(mgr.updateThreadStatus(sc, 'no-thread', 'resolved'), false);
-  });
-
-  // ── getDraftThreads ──────────────────────────────────────────────
-
-  test('getDraftThreads filters only drafts', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-    mgr.addThread(sc, threadStub({ isDraft: false }));
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-
-    const drafts = mgr.getDraftThreads(sc);
-    assert.strictEqual(drafts.length, 2);
-    assert.ok(drafts.every(t => t.isDraft));
-  });
-
-  test('getDraftThreads returns empty array when no drafts', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub({ isDraft: false }));
-
-    assert.strictEqual(mgr.getDraftThreads(sc).length, 0);
-  });
-
-  // ── markAllPublished ─────────────────────────────────────────────
-
-  test('markAllPublished sets isDraft to false on all threads', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-
-    mgr.markAllPublished(sc);
-    assert.ok(sc.comments.every(t => t.isDraft === false));
-  });
-
-  // ── (reparentThread removed — no longer relevant with text-based anchoring) ──
 
   // ── File I/O round-trip ──────────────────────────────────────────
 
