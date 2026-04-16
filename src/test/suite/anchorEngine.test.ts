@@ -1,34 +1,33 @@
 import * as assert from 'assert';
 import { AnchorEngine } from '../../anchorEngine';
-import type { CommentThread, MarkdownSection, CommentAnchor } from '../../models/types';
-import { computeContentHash } from '../../utils/hash';
+import type { CommentThread, CommentAnchor } from '../../models/types';
 
-/** Helper: build a MarkdownSection */
-function section(overrides: Partial<MarkdownSection> = {}): MarkdownSection {
-  const heading = overrides.heading ?? 'Introduction';
-  const content = overrides.content ?? 'Some intro content.';
-  return {
-    heading,
-    slug: overrides.slug ?? 'introduction',
-    level: overrides.level ?? 1,
-    startLine: overrides.startLine ?? 0,
-    endLine: overrides.endLine ?? 5,
-    content,
-    contentHash: overrides.contentHash ?? computeContentHash(content),
-  };
+const SAMPLE_MD = `# Introduction
+
+This is the introduction paragraph with some important text that we might want to comment on.
+
+## API Endpoints
+
+GET /users returns all users. POST /users creates a new user.
+
+## Authentication
+
+Authentication is handled via JWT tokens. Users must provide a valid token.`;
+
+/** Helper: build a CommentAnchor for the given text within SAMPLE_MD */
+function anchorFor(text: string, source = SAMPLE_MD): CommentAnchor {
+  const engine = new AnchorEngine();
+  const start = source.indexOf(text);
+  if (start === -1) { throw new Error(`Text "${text}" not found in source`); }
+  return engine.createAnchor(text, start, start + text.length, source);
 }
 
-/** Helper: build a CommentThread (domain type, not vscode.CommentThread) */
+/** Helper: build a CommentThread */
 function thread(overrides: Partial<CommentThread> = {}): CommentThread {
   return {
     id: overrides.id ?? 'thread-1',
-    anchor: overrides.anchor ?? {
-      sectionSlug: 'introduction',
-      contentHash: computeContentHash('Some intro content.'),
-      lineHint: 0,
-    },
+    anchor: overrides.anchor ?? anchorFor('important text'),
     status: overrides.status ?? 'open',
-    isDraft: overrides.isDraft ?? false,
     thread: overrides.thread ?? [
       {
         id: 'entry-1',
@@ -42,206 +41,208 @@ function thread(overrides: Partial<CommentThread> = {}): CommentThread {
 }
 
 suite('AnchorEngine Test Suite', () => {
+
+  // ── extractContext ────────────────────────────────────────────────
+
+  test('extractContext returns prefix and suffix around selection', () => {
+    const engine = new AnchorEngine();
+    const text = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz';
+    const ctx = engine.extractContext(text, 10, 15);
+    assert.strictEqual(ctx.prefix, text.slice(0, 10));
+    assert.strictEqual(ctx.suffix, text.slice(15, 55));
+  });
+
+  test('extractContext handles start-of-document selection', () => {
+    const engine = new AnchorEngine();
+    const ctx = engine.extractContext('Hello world', 0, 5);
+    assert.strictEqual(ctx.prefix, '');
+    assert.strictEqual(ctx.suffix, ' world');
+  });
+
+  test('extractContext handles end-of-document selection', () => {
+    const engine = new AnchorEngine();
+    const ctx = engine.extractContext('Hello world', 6, 11);
+    assert.strictEqual(ctx.suffix, '');
+    assert.ok(ctx.prefix.length > 0);
+  });
+
   // ── createAnchor ─────────────────────────────────────────────────
 
-  test('createAnchor returns correct anchor from a section', () => {
+  test('createAnchor returns correct selectedText and range', () => {
     const engine = new AnchorEngine();
-    const sec = section();
-    const anchor = engine.createAnchor(sec);
+    const source = 'The quick brown fox jumps over the lazy dog.';
+    const anchor = engine.createAnchor('brown fox', 10, 19, source);
 
-    assert.strictEqual(anchor.sectionSlug, 'introduction');
-    assert.strictEqual(anchor.contentHash, sec.contentHash);
-    assert.strictEqual(anchor.lineHint, sec.startLine);
+    assert.strictEqual(anchor.selectedText, 'brown fox');
+    assert.strictEqual(anchor.markdownRange.startOffset, 10);
+    assert.strictEqual(anchor.markdownRange.endOffset, 19);
+    assert.ok(anchor.textContext.prefix.length > 0);
+    assert.ok(anchor.textContext.suffix.length > 0);
   });
 
-  test('createAnchor preserves different slugs and lines', () => {
-    const engine = new AnchorEngine();
-    const sec = section({
-      heading: 'API Endpoints',
-      slug: 'api-endpoints',
-      startLine: 42,
-      content: 'GET /users returns all users.',
-    });
-    const anchor = engine.createAnchor(sec);
-
-    assert.strictEqual(anchor.sectionSlug, 'api-endpoints');
-    assert.strictEqual(anchor.lineHint, 42);
-    assert.strictEqual(anchor.contentHash, computeContentHash('GET /users returns all users.'));
+  test('createAnchor captures context from markdown source', () => {
+    const anchor = anchorFor('important text');
+    assert.strictEqual(anchor.selectedText, 'important text');
+    assert.ok(anchor.textContext.prefix.length > 0, 'should have prefix context');
+    assert.ok(anchor.textContext.suffix.length > 0, 'should have suffix context');
   });
 
-  // ── findAnchoredSection ──────────────────────────────────────────
+  // ── anchorComment — Strategy 1: exact offset match ───────────────
 
-  test('findAnchoredSection returns matching section with isStale=false', () => {
+  test('anchorComment finds text at exact original offsets', () => {
     const engine = new AnchorEngine();
-    const sec = section();
-    const anchor: CommentAnchor = {
-      sectionSlug: 'introduction',
-      contentHash: sec.contentHash,
-      lineHint: 0,
-    };
+    const anchor = anchorFor('GET /users');
+    const result = engine.anchorComment(anchor, SAMPLE_MD);
 
-    const result = engine.findAnchoredSection([sec], anchor);
     assert.ok(result);
-    assert.strictEqual(result!.section.heading, 'Introduction');
-    assert.strictEqual(result!.isStale, false);
+    assert.strictEqual(SAMPLE_MD.slice(result!.startOffset, result!.endOffset), 'GET /users');
   });
 
-  test('findAnchoredSection returns isStale=true when hash differs', () => {
-    const engine = new AnchorEngine();
-    const sec = section();
-    const anchor: CommentAnchor = {
-      sectionSlug: 'introduction',
-      contentHash: 'old-hash-value',
-      lineHint: 0,
-    };
+  // ── anchorComment — Strategy 2: nearby window search ─────────────
 
-    const result = engine.findAnchoredSection([sec], anchor);
-    assert.ok(result);
-    assert.strictEqual(result!.isStale, true);
+  test('anchorComment finds text when offsets shift slightly', () => {
+    const engine = new AnchorEngine();
+    const anchor = anchorFor('JWT tokens');
+
+    // Insert text before the anchor location to shift offsets
+    const edited = SAMPLE_MD.replace('# Introduction', '# Introduction\n\nNew paragraph added here.');
+    const result = engine.anchorComment(anchor, edited);
+
+    assert.ok(result, 'Should find text in nearby window');
+    assert.strictEqual(edited.slice(result!.startOffset, result!.endOffset), 'JWT tokens');
   });
 
-  test('findAnchoredSection returns null when slug not found', () => {
+  // ── anchorComment — Strategy 3: context search ───────────────────
+
+  test('anchorComment finds text via context when far from original position', () => {
     const engine = new AnchorEngine();
-    const sec = section();
+    const anchor = anchorFor('JWT tokens');
+
+    // Build a very different document but with the same passage preserved
+    const farAway = 'X'.repeat(2000) + '\n\nAuthentication is handled via JWT tokens. Users must provide a valid token.';
+    const result = engine.anchorComment(anchor, farAway);
+
+    assert.ok(result, 'Should find text via context concatenation or partial context');
+    assert.strictEqual(farAway.slice(result!.startOffset, result!.endOffset), 'JWT tokens');
+  });
+
+  // ── anchorComment — Strategy 5: global search ────────────────────
+
+  test('anchorComment falls back to global search when context is gone', () => {
+    const engine = new AnchorEngine();
     const anchor: CommentAnchor = {
-      sectionSlug: 'nonexistent-section',
-      contentHash: 'anything',
-      lineHint: 0,
+      selectedText: 'unique phrase xyz',
+      textContext: { prefix: 'completely different prefix', suffix: 'completely different suffix' },
+      markdownRange: { startOffset: 9999, endOffset: 10016 },
     };
 
-    const result = engine.findAnchoredSection([sec], anchor);
+    const source = 'Some content. Then unique phrase xyz appears here.';
+    const result = engine.anchorComment(anchor, source);
+
+    assert.ok(result, 'Should find via global search');
+    assert.strictEqual(source.slice(result!.startOffset, result!.endOffset), 'unique phrase xyz');
+  });
+
+  // ── anchorComment — orphaned ─────────────────────────────────────
+
+  test('anchorComment returns null when text is completely gone', () => {
+    const engine = new AnchorEngine();
+    const anchor: CommentAnchor = {
+      selectedText: 'this text does not exist anywhere',
+      textContext: { prefix: 'nope', suffix: 'nope' },
+      markdownRange: { startOffset: 0, endOffset: 32 },
+    };
+
+    const result = engine.anchorComment(anchor, SAMPLE_MD);
     assert.strictEqual(result, null);
-  });
-
-  test('findAnchoredSection picks correct section from multiple', () => {
-    const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', content: 'Intro content' }),
-      section({ heading: 'API', slug: 'api', content: 'API content', startLine: 10 }),
-      section({ heading: 'Auth', slug: 'auth', content: 'Auth content', startLine: 20 }),
-    ];
-    const anchor: CommentAnchor = {
-      sectionSlug: 'api',
-      contentHash: computeContentHash('API content'),
-      lineHint: 10,
-    };
-
-    const result = engine.findAnchoredSection(sections, anchor);
-    assert.ok(result);
-    assert.strictEqual(result!.section.heading, 'API');
-    assert.strictEqual(result!.isStale, false);
   });
 
   // ── detectStaleThreads ───────────────────────────────────────────
 
   test('detectStaleThreads returns empty when all threads match', () => {
     const engine = new AnchorEngine();
-    const sec = section();
-    const t = thread({ anchor: { sectionSlug: 'introduction', contentHash: sec.contentHash, lineHint: 0 } });
+    const t = thread({ anchor: anchorFor('important text') });
 
-    const updates = engine.detectStaleThreads([sec], [t]);
+    const { updates } = engine.detectStaleThreads(SAMPLE_MD, [t]);
     assert.strictEqual(updates.length, 0);
   });
 
-  test('detectStaleThreads marks thread stale when content drifted', () => {
-    const engine = new AnchorEngine();
-    const sec = section(); // current content hash
-    const t = thread({
-      status: 'open',
-      anchor: { sectionSlug: 'introduction', contentHash: 'old-hash', lineHint: 0 },
-    });
-
-    const updates = engine.detectStaleThreads([sec], [t]);
-    assert.strictEqual(updates.length, 1);
-    assert.strictEqual(updates[0].newStatus, 'stale');
-    assert.strictEqual(updates[0].thread.id, t.id);
-  });
-
-  test('detectStaleThreads marks thread stale when section is missing', () => {
+  test('detectStaleThreads marks thread stale when text is removed', () => {
     const engine = new AnchorEngine();
     const t = thread({
       status: 'open',
-      anchor: { sectionSlug: 'deleted-section', contentHash: 'any', lineHint: 0 },
+      anchor: anchorFor('important text'),
     });
 
-    const updates = engine.detectStaleThreads([], [t]); // no sections at all
+    const edited = SAMPLE_MD.replace('important text', 'replaced content');
+    const { updates } = engine.detectStaleThreads(edited, [t]);
     assert.strictEqual(updates.length, 1);
     assert.strictEqual(updates[0].newStatus, 'stale');
   });
 
-  test('detectStaleThreads reverts stale to open when content matches again', () => {
+  test('detectStaleThreads reverts stale to open when text reappears', () => {
     const engine = new AnchorEngine();
-    const sec = section();
     const t = thread({
       status: 'stale',
-      anchor: { sectionSlug: 'introduction', contentHash: sec.contentHash, lineHint: 0 },
+      anchor: anchorFor('important text'),
     });
 
-    const updates = engine.detectStaleThreads([sec], [t]);
+    // Text is still there — should revert to open
+    const { updates } = engine.detectStaleThreads(SAMPLE_MD, [t]);
     assert.strictEqual(updates.length, 1);
     assert.strictEqual(updates[0].newStatus, 'open');
   });
 
-  test('detectStaleThreads skips resolved threads', () => {
-    const engine = new AnchorEngine();
-    const sec = section();
-    const t = thread({
-      status: 'resolved',
-      anchor: { sectionSlug: 'introduction', contentHash: 'wrong-hash', lineHint: 0 },
-    });
-
-    const updates = engine.detectStaleThreads([sec], [t]);
-    assert.strictEqual(updates.length, 0); // resolved threads are never changed
-  });
-
   test('detectStaleThreads does not re-report already stale threads', () => {
     const engine = new AnchorEngine();
-    const sec = section();
     const t = thread({
       status: 'stale',
-      anchor: { sectionSlug: 'introduction', contentHash: 'different-hash', lineHint: 0 },
+      anchor: {
+        selectedText: 'nonexistent text that is not in the document',
+        textContext: { prefix: 'nope', suffix: 'nope' },
+        markdownRange: { startOffset: 0, endOffset: 44 },
+      },
     });
 
-    const updates = engine.detectStaleThreads([sec], [t]);
-    assert.strictEqual(updates.length, 0); // already stale, no change needed
+    const { updates } = engine.detectStaleThreads(SAMPLE_MD, [t]);
+    assert.strictEqual(updates.length, 0);
+  });
+
+  test('detectStaleThreads updates anchor offsets when text moves', () => {
+    const engine = new AnchorEngine();
+    const t = thread({
+      status: 'open',
+      anchor: anchorFor('JWT tokens'),
+    });
+    const originalStart = t.anchor.markdownRange.startOffset;
+
+    // Insert text before JWT tokens to shift offsets
+    const edited = SAMPLE_MD.replace('# Introduction', '# Introduction\n\nExtra paragraph.');
+    const { updates, anchorsMoved } = engine.detectStaleThreads(edited, [t]);
+
+    // Thread should still be found (no stale update)
+    assert.strictEqual(updates.length, 0);
+    // Anchors should have moved
+    assert.strictEqual(anchorsMoved, true);
+    // Offsets should have been updated in-place
+    assert.notStrictEqual(t.anchor.markdownRange.startOffset, originalStart);
+    assert.strictEqual(edited.slice(t.anchor.markdownRange.startOffset, t.anchor.markdownRange.endOffset), 'JWT tokens');
   });
 
   test('detectStaleThreads handles multiple threads with mixed states', () => {
     const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'A', slug: 'a', content: 'Content A' }),
-      section({ heading: 'B', slug: 'b', content: 'Content B' }),
-    ];
 
     const threads = [
-      // open, matching → no update
-      thread({
-        id: 't1',
-        status: 'open',
-        anchor: { sectionSlug: 'a', contentHash: computeContentHash('Content A'), lineHint: 0 },
-      }),
-      // open, drifted → stale
-      thread({
-        id: 't2',
-        status: 'open',
-        anchor: { sectionSlug: 'b', contentHash: 'old', lineHint: 5 },
-      }),
-      // resolved, drifted → skip
-      thread({
-        id: 't3',
-        status: 'resolved',
-        anchor: { sectionSlug: 'a', contentHash: 'old', lineHint: 0 },
-      }),
-      // stale, now matching → open
-      thread({
-        id: 't4',
-        status: 'stale',
-        anchor: { sectionSlug: 'a', contentHash: computeContentHash('Content A'), lineHint: 0 },
-      }),
+      // open, text present → no update
+      thread({ id: 't1', status: 'open', anchor: anchorFor('GET /users') }),
+      // open, text will be removed → stale
+      thread({ id: 't2', status: 'open', anchor: anchorFor('JWT tokens') }),
+      // stale, text present → open
+      thread({ id: 't4', status: 'stale', anchor: anchorFor('GET /users') }),
     ];
 
-    const updates = engine.detectStaleThreads(sections, threads);
-    assert.strictEqual(updates.length, 2);
+    const edited = SAMPLE_MD.replace('JWT tokens', 'OAuth2 tokens');
+    const { updates } = engine.detectStaleThreads(edited, threads);
 
     const t2Update = updates.find(u => u.thread.id === 't2');
     assert.ok(t2Update);
@@ -250,190 +251,52 @@ suite('AnchorEngine Test Suite', () => {
     const t4Update = updates.find(u => u.thread.id === 't4');
     assert.ok(t4Update);
     assert.strictEqual(t4Update!.newStatus, 'open');
+
+    // t1 should not appear in updates
+    assert.ok(!updates.find(u => u.thread.id === 't1'));
   });
 
-  // ── Cache behaviour (clearCache) ─────────────────────────────────
+  // ── Duplicate text handling ──────────────────────────────────────
 
-  test('clearCache removes stored sections', () => {
+  test('anchorComment picks nearest match for duplicate text in window search', () => {
     const engine = new AnchorEngine();
-    engine.clearCache('file:///test.md');
-    // No assertion needed — just verifying no error is thrown
+    // Source with "the" appearing multiple times
+    const source = 'AAA the BBB CCC the DDD EEE the FFF';
+    // Anchor originally pointed to second "the" at offset 16
+    const anchor = engine.createAnchor('the', 16, 19, source);
+
+    // Shift content so original offset is wrong but text is still nearby
+    const edited = 'XX AAA the BBB CCC the DDD EEE the FFF';
+    const result = engine.anchorComment(anchor, edited);
+    assert.ok(result);
+    // Should pick the occurrence nearest to original offset (the second "the" at 19)
+    assert.strictEqual(edited.slice(result!.startOffset, result!.endOffset), 'the');
+    // The nearest "the" to offset 16 should be around 19 (shifted by 3), not 7
+    assert.ok(result!.startOffset > 10, `Expected nearest match, got offset ${result!.startOffset}`);
   });
 
-  // ── findSectionByLine ────────────────────────────────────────────
+  // ── anchorsMoved flag ────────────────────────────────────────────
 
-  test('findSectionByLine returns section containing the line', () => {
+  test('detectStaleThreads reports anchorsMoved=false when nothing changes', () => {
     const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'A', slug: 'a', startLine: 0, endLine: 5 }),
-      section({ heading: 'B', slug: 'b', startLine: 5, endLine: 12 }),
-      section({ heading: 'C', slug: 'c', startLine: 12, endLine: 20 }),
-    ];
+    const t = thread({ anchor: anchorFor('important text') });
 
-    assert.strictEqual(engine.findSectionByLine(sections, 0)?.heading, 'A');
-    assert.strictEqual(engine.findSectionByLine(sections, 3)?.heading, 'A');
-    assert.strictEqual(engine.findSectionByLine(sections, 5)?.heading, 'B');
-    assert.strictEqual(engine.findSectionByLine(sections, 11)?.heading, 'B');
-    assert.strictEqual(engine.findSectionByLine(sections, 12)?.heading, 'C');
-    assert.strictEqual(engine.findSectionByLine(sections, 19)?.heading, 'C');
+    const { anchorsMoved } = engine.detectStaleThreads(SAMPLE_MD, [t]);
+    assert.strictEqual(anchorsMoved, false);
   });
 
-  test('findSectionByLine returns undefined for out-of-range line', () => {
+  // ── CRLF normalization ───────────────────────────────────────────
+
+  test('anchorComment works with CRLF line endings', () => {
     const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'A', slug: 'a', startLine: 0, endLine: 5 }),
-    ];
+    const lfSource = 'Line one\nLine two\nLine three';
+    const anchor = engine.createAnchor('Line two', 9, 17, lfSource);
 
-    assert.strictEqual(engine.findSectionByLine(sections, 5), undefined); // endLine is exclusive
-    assert.strictEqual(engine.findSectionByLine(sections, 99), undefined);
-  });
-
-  test('findSectionByLine returns undefined for empty sections', () => {
-    const engine = new AnchorEngine();
-    assert.strictEqual(engine.findSectionByLine([], 0), undefined);
-  });
-
-  // ── Orphaned thread identification ───────────────────────────────
-
-  test('findAnchoredSection returns null for orphaned thread (section deleted)', () => {
-    const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', content: 'Intro content' }),
-      section({ heading: 'Setup', slug: 'setup', content: 'Setup content' }),
-    ];
-    
-    // Anchor points to a section that no longer exists
-    const orphanedAnchor: CommentAnchor = {
-      sectionSlug: 'deleted-authentication-section',
-      contentHash: 'some-old-hash',
-      lineHint: 50,
-    };
-
-    const result = engine.findAnchoredSection(sections, orphanedAnchor);
-    assert.strictEqual(result, null, 'Orphaned anchor should return null');
-  });
-
-  test('detectStaleThreads identifies orphaned threads by missing slug', () => {
-    const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', content: 'Intro content' }),
-    ];
-
-    // Thread 1: anchored to existing section → no update
-    const validThread = thread({
-      id: 'valid',
-      status: 'open',
-      anchor: { sectionSlug: 'intro', contentHash: computeContentHash('Intro content'), lineHint: 0 },
-    });
-
-    // Thread 2: anchored to section that was deleted → becomes stale (orphaned)
-    const orphanedThread = thread({
-      id: 'orphaned',
-      status: 'open',
-      anchor: { sectionSlug: 'deleted-section', contentHash: 'any', lineHint: 99 },
-    });
-
-    const updates = engine.detectStaleThreads(sections, [validThread, orphanedThread]);
-    
-    assert.strictEqual(updates.length, 1, 'Only orphaned thread should need update');
-    assert.strictEqual(updates[0].thread.id, 'orphaned');
-    assert.strictEqual(updates[0].newStatus, 'stale', 'Orphaned thread should become stale');
-  });
-
-  test('orphaned thread with stale status remains unchanged', () => {
-    const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', content: 'Intro content' }),
-    ];
-
-    // Already stale thread with missing section should not generate another update
-    const alreadyStaleOrphan = thread({
-      id: 'stale-orphan',
-      status: 'stale',
-      anchor: { sectionSlug: 'long-gone-section', contentHash: 'any', lineHint: 0 },
-    });
-
-    const updates = engine.detectStaleThreads(sections, [alreadyStaleOrphan]);
-    assert.strictEqual(updates.length, 0, 'Already stale orphaned thread should not update');
-  });
-
-  // ── findReparentCandidate ────────────────────────────────────────
-
-  test('findReparentCandidate returns section matching lineHint', () => {
-    const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', startLine: 0, content: 'Intro content' }),
-      section({ heading: 'New Auth Section', slug: 'new-auth-section', startLine: 10, content: 'Auth content' }),
-      section({ heading: 'Conclusion', slug: 'conclusion', startLine: 20, content: 'Conclusion content' }),
-    ];
-
-    // Anchor with lineHint=10 should match the section at line 10
-    const anchor: CommentAnchor = {
-      sectionSlug: 'old-authentication', // old slug that no longer exists
-      contentHash: 'old-hash',
-      lineHint: 10,
-    };
-
-    const candidate = engine.findReparentCandidate(sections, anchor);
-    assert.ok(candidate, 'Should find a reparent candidate');
-    assert.strictEqual(candidate!.slug, 'new-auth-section');
-    assert.strictEqual(candidate!.heading, 'New Auth Section');
-  });
-
-  test('findReparentCandidate returns section matching contentHash when lineHint does not match', () => {
-    const engine = new AnchorEngine();
-    const content = 'This is the original content that was not changed.';
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', startLine: 0, content: 'Intro content' }),
-      section({ heading: 'Renamed Section', slug: 'renamed-section', startLine: 15, content }),
-    ];
-
-    // Anchor with matching contentHash but different lineHint
-    const anchor: CommentAnchor = {
-      sectionSlug: 'original-section',
-      contentHash: computeContentHash(content),
-      lineHint: 99, // wrong line
-    };
-
-    const candidate = engine.findReparentCandidate(sections, anchor);
-    assert.ok(candidate, 'Should find a reparent candidate by content hash');
-    assert.strictEqual(candidate!.slug, 'renamed-section');
-  });
-
-  test('findReparentCandidate returns null when no match found', () => {
-    const engine = new AnchorEngine();
-    const sections = [
-      section({ heading: 'Intro', slug: 'intro', startLine: 0, content: 'Intro content' }),
-      section({ heading: 'Setup', slug: 'setup', startLine: 5, content: 'Setup content' }),
-    ];
-
-    const anchor: CommentAnchor = {
-      sectionSlug: 'deleted-section',
-      contentHash: 'unique-hash-not-matching-anything',
-      lineHint: 999, // no section at this line
-    };
-
-    const candidate = engine.findReparentCandidate(sections, anchor);
-    assert.strictEqual(candidate, null, 'Should return null when no candidate found');
-  });
-
-  test('findReparentCandidate prioritizes lineHint over contentHash', () => {
-    const engine = new AnchorEngine();
-    const content = 'Shared content between sections.';
-    const sections = [
-      section({ heading: 'Section A', slug: 'section-a', startLine: 5, content }),
-      section({ heading: 'Section B', slug: 'section-b', startLine: 10, content }),
-    ];
-
-    // Both sections have the same content, but lineHint matches Section A
-    const anchor: CommentAnchor = {
-      sectionSlug: 'old-section',
-      contentHash: computeContentHash(content),
-      lineHint: 5,
-    };
-
-    const candidate = engine.findReparentCandidate(sections, anchor);
-    assert.ok(candidate);
-    assert.strictEqual(candidate!.slug, 'section-a', 'Should prioritize lineHint match');
+    // Same content but with CRLF — after normalization offsets may differ
+    // but the text should still be found
+    const crlfSource = 'Line one\r\nLine two\r\nLine three';
+    const result = engine.anchorComment(anchor, crlfSource);
+    assert.ok(result, 'Should find text despite CRLF');
+    assert.strictEqual(crlfSource.slice(result!.startOffset, result!.endOffset), 'Line two');
   });
 });

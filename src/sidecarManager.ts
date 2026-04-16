@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { SidecarFile, CommentThread, CommentEntry, CommentAnchor } from './models/types';
+import type { SidecarFile, CommentThread, CommentEntry } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
 
 /** Origin tag so listeners can ignore their own writes. */
@@ -66,6 +66,13 @@ export class SidecarManager {
    * @param origin  Who is triggering the write (so listeners can skip their own changes).
    */
   async writeSidecar(docPath: string, sidecar: SidecarFile, origin: WriteOrigin = 'internal'): Promise<void> {
+    // If all comments have been removed, delete the sidecar file instead of writing an empty one
+    if (sidecar.comments.length === 0) {
+      await this.deleteSidecar(docPath);
+      this._onDidChange.fire({ docPath, origin });
+      return;
+    }
+
     const sidecarPath = this.getSidecarPath(docPath);
     const tempPath = `${sidecarPath}.tmp`;
 
@@ -90,12 +97,22 @@ export class SidecarManager {
   }
 
   /**
+   * Delete the sidecar file for a markdown document if it exists.
+   */
+  async deleteSidecar(docPath: string): Promise<void> {
+    const sidecarPath = this.getSidecarPath(docPath);
+    if (fs.existsSync(sidecarPath)) {
+      await fs.promises.unlink(sidecarPath);
+    }
+  }
+
+  /**
    * Create a new empty sidecar file
    */
   createEmptySidecar(docName: string): SidecarFile {
     return {
       doc: docName,
-      version: '1.0',
+      version: '2.0',
       comments: [],
     };
   }
@@ -126,8 +143,6 @@ export class SidecarManager {
       id: uuidv4(),
     };
     thread.thread.push(newEntry);
-    // Mark thread as draft since it has unpublished changes
-    thread.isDraft = true;
     return newEntry;
   }
 
@@ -208,51 +223,6 @@ export class SidecarManager {
   }
 
   /**
-   * Update thread status
-   */
-  updateThreadStatus(sidecar: SidecarFile, threadId: string, status: CommentThread['status']): boolean {
-    const thread = sidecar.comments.find(t => t.id === threadId);
-    if (!thread) {
-      return false;
-    }
-    thread.status = status;
-    // Mark thread as draft since it has unpublished changes
-    thread.isDraft = true;
-    return true;
-  }
-
-  /**
-   * Get all draft (unpublished) threads
-   */
-  getDraftThreads(sidecar: SidecarFile): CommentThread[] {
-    return sidecar.comments.filter(t => t.isDraft);
-  }
-
-  /**
-   * Mark all draft threads as published
-   */
-  markAllPublished(sidecar: SidecarFile): void {
-    sidecar.comments.forEach(t => {
-      t.isDraft = false;
-    });
-  }
-
-  /**
-   * Reparent a thread to a new section anchor.
-   * Used when a heading is renamed but the section still exists.
-   */
-  reparentThread(sidecar: SidecarFile, threadId: string, newAnchor: CommentAnchor): boolean {
-    const thread = sidecar.comments.find(t => t.id === threadId);
-    if (!thread) {
-      return false;
-    }
-    thread.anchor = newAnchor;
-    thread.status = 'open'; // Clear stale/orphaned status
-    thread.isDraft = true;  // Mark as draft since anchor changed
-    return true;
-  }
-
-  /**
    * Validate sidecar file structure
    */
   private validateSidecar(data: unknown): data is SidecarFile {
@@ -265,7 +235,7 @@ export class SidecarManager {
     if (typeof sidecar.doc !== 'string') {
       return false;
     }
-    if (sidecar.version !== '1.0') {
+    if (sidecar.version !== '2.0') {
       return false;
     }
     if (!Array.isArray(sidecar.comments)) {

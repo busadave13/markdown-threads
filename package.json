@@ -1,8 +1,8 @@
 {
   "name": "markdown-threads",
   "displayName": "Markdown Threads",
-  "description": "Inline feedback and comments on markdown files stored in Git, with automatic PR creation",
-  "version": "0.2.1",
+  "description": "Inline feedback and comments on markdown files stored in Git",
+  "version": "1.0.0",
   "publisher": "busa-dave-13",
   "license": "MIT",
   "icon": "media/markdown-threads-icon.png",
@@ -14,8 +14,7 @@
     "markdown",
     "review",
     "comments",
-    "feedback",
-    "pull request"
+    "feedback"
   ],
   "engines": {
     "vscode": "^1.85.0"
@@ -26,10 +25,9 @@
   "activationEvents": [
     "onLanguage:markdown",
     "onCommand:markdownThreads.openPreview",
-    "onCommand:markdownThreads.publishDrafts",
     "onView:markdownThreads.files"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -49,11 +47,6 @@
       ]
     },
     "commands": [
-      {
-        "command": "markdownThreads.publishDrafts",
-        "title": "Publish Pending Comments as PR",
-        "category": "Markdown Threads"
-      },
       {
         "command": "markdownThreads.openPreview",
         "title": "Markdown: Review and Comment",
@@ -76,25 +69,30 @@
     "configuration": {
       "title": "Markdown Threads",
       "properties": {
-        "markdownThreads.autoOpenPR": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically open browser to PR after creation"
-        },
-        "markdownThreads.branchPrefix": {
-          "type": "string",
-          "default": "doc-comment",
-          "description": "Prefix for branches created when publishing comments"
-        },
-        "markdownThreads.defaultProvider": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "github",
-            "azuredevops"
+        "markdownThreads.excludeFolders": {
+          "type": "array",
+          "scope": "resource",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            ".github",
+            ".git",
+            "out",
+            "dist",
+            "bin",
+            "obj",
+            ".vscode",
+            ".vscode-test"
           ],
-          "default": "auto",
-          "description": "Git provider for PR creation (auto-detects from remotes)"
+          "description": "Folders to exclude from the Markdown Files tree view."
+        },
+        "markdownThreads.enableSpecitRendering": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "description": "Enable SPECIT document rendering (header card, status buttons, inline field editing). When disabled, SPECIT documents render as plain markdown."
         }
       }
     },
@@ -128,17 +126,19 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run esbuild-production",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "esbuild": "node esbuild.config.mjs",
+    "esbuild-production": "node esbuild.config.mjs --production",
+    "esbuild-watch": "node esbuild.config.mjs --watch",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js",
-    "package": "vsce package"
+    "package": "npm run esbuild-production && vsce package"
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",
-    "@types/markdown-it": "^14.1.2",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.10.0",
     "@types/uuid": "^9.0.7",
@@ -147,16 +147,14 @@
     "@typescript-eslint/parser": "^6.13.0",
     "@vscode/test-electron": "^2.3.8",
     "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.28.0",
     "eslint": "^8.55.0",
     "glob": "^10.3.10",
     "mocha": "^10.2.0",
     "typescript": "^5.3.2"
   },
   "dependencies": {
-    "@octokit/rest": "^20.0.2",
-    "azure-devops-node-api": "^12.5.0",
-    "markdown-it": "^14.0.0",
-    "mermaid": "^11.12.3",
+    "markdown-it": "^14.1.1",
     "simple-git": "^3.21.0",
     "uuid": "^9.0.1"
   }

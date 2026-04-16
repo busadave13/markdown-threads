@@ -8,18 +8,12 @@ import { anchorEngine } from './anchorEngine';
  */
 export class DecorationProvider implements vscode.Disposable {
   private openDecoration: vscode.TextEditorDecorationType;
-  private resolvedDecoration: vscode.TextEditorDecorationType;
   private staleDecoration: vscode.TextEditorDecorationType;
   private disposables: vscode.Disposable[] = [];
 
   constructor(extensionPath: string) {
     this.openDecoration = vscode.window.createTextEditorDecorationType({
       gutterIconPath: path.join(extensionPath, 'media', 'comment-bubble.svg'),
-      gutterIconSize: 'contain',
-    });
-
-    this.resolvedDecoration = vscode.window.createTextEditorDecorationType({
-      gutterIconPath: path.join(extensionPath, 'media', 'comment-resolved.svg'),
       gutterIconSize: 'contain',
     });
 
@@ -30,7 +24,6 @@ export class DecorationProvider implements vscode.Disposable {
 
     this.disposables.push(
       this.openDecoration,
-      this.resolvedDecoration,
       this.staleDecoration
     );
   }
@@ -57,43 +50,47 @@ export class DecorationProvider implements vscode.Disposable {
       return;
     }
 
-    const sections = anchorEngine.getSections(document);
+    const rawText = document.getText();
     
     const openRanges: vscode.DecorationOptions[] = [];
-    const resolvedRanges: vscode.DecorationOptions[] = [];
     const staleRanges: vscode.DecorationOptions[] = [];
 
     for (const thread of sidecar.comments) {
-      const result = anchorEngine.findAnchoredSection(sections, thread.anchor);
-      if (!result) {
-        continue;
+      // Re-anchor to find current position
+      const anchoredRange = anchorEngine.anchorComment(thread.anchor, rawText);
+      if (!anchoredRange) {
+        continue; // Can't locate this thread — skip decoration
       }
 
-      const range = anchorEngine.getSectionRange(document, result.section);
+      // Convert character offset to line number
+      const startPos = document.positionAt(anchoredRange.startOffset);
+      const endPos = document.positionAt(anchoredRange.endOffset);
+      const range = new vscode.Range(startPos, endPos);
+
       const threadCount = thread.thread.length;
       const firstComment = thread.thread[0]?.body ?? '';
       const preview = firstComment.length > 50 
         ? firstComment.substring(0, 50) + '...' 
         : firstComment;
+      const selectedText = thread.anchor.selectedText.length > 30
+        ? thread.anchor.selectedText.substring(0, 30) + '...'
+        : thread.anchor.selectedText;
 
       const decoration: vscode.DecorationOptions = {
         range,
         hoverMessage: new vscode.MarkdownString(
-          `**${threadCount} comment${threadCount > 1 ? 's' : ''}**\n\n${preview}`
+          `**${threadCount} comment${threadCount > 1 ? 's' : ''}** on _"${selectedText}"_\n\n${preview}`
         ),
       };
 
-      if (result.isStale || thread.status === 'stale') {
+      if (thread.status === 'stale') {
         staleRanges.push(decoration);
-      } else if (thread.status === 'resolved') {
-        resolvedRanges.push(decoration);
       } else {
         openRanges.push(decoration);
       }
     }
 
     editor.setDecorations(this.openDecoration, openRanges);
-    editor.setDecorations(this.resolvedDecoration, resolvedRanges);
     editor.setDecorations(this.staleDecoration, staleRanges);
   }
 
@@ -102,7 +99,6 @@ export class DecorationProvider implements vscode.Disposable {
    */
   clearDecorations(editor: vscode.TextEditor): void {
     editor.setDecorations(this.openDecoration, []);
-    editor.setDecorations(this.resolvedDecoration, []);
     editor.setDecorations(this.staleDecoration, []);
   }
 

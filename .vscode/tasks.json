@@ -2,10 +2,11 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "esbuild-watch",
       "type": "npm",
-      "script": "watch",
-      "problemMatcher": "$tsc-watch",
+      "script": "esbuild-watch",
       "isBackground": true,
+      "problemMatcher": "$esbuild-watch",
       "presentation": {
         "reveal": "never"
       },
@@ -13,6 +14,28 @@
         "kind": "build",
         "isDefault": true
       }
+    },
+    {
+      "label": "tsc-watch",
+      "type": "npm",
+      "script": "watch",
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "never"
+      },
+      "group": "build"
+    },
+    {
+      "label": "Build VSIX",
+      "type": "shell",
+      "command": "Remove-Item -Force *.vsix -ErrorAction SilentlyContinue; npx @vscode/vsce package",
+      "problemMatcher": "$tsc",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "group": "build"
     }
   ]
 }

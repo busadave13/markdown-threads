@@ -1,16 +1,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import MarkdownIt from 'markdown-it';
 import { sidecarManager } from './sidecarManager';
 import type { SidecarChangeEvent } from './sidecarManager';
 import { anchorEngine } from './anchorEngine';
 import { gitService } from './gitService';
-import { gitHubProvider } from './providers/githubProvider';
-import { adoProvider } from './providers/adoProvider';
-import { slugify } from './utils/hash';
-import { markdownItMermaid } from './utils/markdownItMermaid';
 import type { CommentThread as AppCommentThread } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
+import { findSelectionInRawMarkdown } from './utils/markdown';
+import {
+  parseSpecitHeader, updateSpecitField,
+  inferSpecitDocType, specitDocTypeLabel,
+  resolveInternalDocLink,
+  EDITABLE_FIELDS, STATUS_OPTIONS,
+} from './utils/specit';
 
 /**
  * Manages a WebView panel that renders the markdown document
@@ -24,10 +26,17 @@ export class PreviewPanel implements vscode.Disposable {
 
   private readonly panel: vscode.WebviewPanel;
   private document: vscode.TextDocument;
-  private readonly md: MarkdownIt;
   private readonly disposables: vscode.Disposable[] = [];
   private updateTimeout: ReturnType<typeof setTimeout> | undefined;
-  private readonly mermaidUri: vscode.Uri;
+  private _isUpdating = false;
+  /** Temporarily suppress follow-active-editor after internal doc navigation */
+  private _suppressFollowEditor = false;
+  private _suppressFollowTimeout: ReturnType<typeof setTimeout> | undefined;
+  /** Navigation history stack for back-button support */
+  private _navHistory: vscode.Uri[] = [];
+  private readonly styleUri: vscode.Uri;
+  private readonly markdownItUri: vscode.Uri;
+  private readonly docDirUri: () => vscode.Uri;
 
   // ───────────────── public API ─────────────────
 
@@ -38,9 +47,16 @@ export class PreviewPanel implements vscode.Disposable {
 
   /** Create a new preview panel or reveal an existing one. */
   public static async show(document: vscode.TextDocument): Promise<void> {
+    // When an editor is open, open beside it and keep focus on the editor.
+    // When no editor is open, open in the main column and let the panel take focus
+    // so the webview renderer activates reliably.
+    const hasEditor = vscode.window.activeTextEditor !== undefined;
+    const viewColumn = hasEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.One;
+    const preserveFocus = hasEditor;
+
     if (PreviewPanel.instance) {
       PreviewPanel.instance.document = document;
-      PreviewPanel.instance.panel.reveal(vscode.ViewColumn.Beside, true);
+      PreviewPanel.instance.panel.reveal(viewColumn, preserveFocus);
       await PreviewPanel.instance.update();
       return;
     }
@@ -50,23 +66,15 @@ export class PreviewPanel implements vscode.Disposable {
       return;
     }
 
-    const mermaidPath = vscode.Uri.joinPath(
-      PreviewPanel.extensionUri,
-      'node_modules',
-      'mermaid',
-      'dist',
-      'mermaid.min.js'
-    );
-
     const localResourceRoots = [
       ...(vscode.workspace.workspaceFolders?.map(f => f.uri) ?? []),
-      vscode.Uri.joinPath(PreviewPanel.extensionUri, 'node_modules'),
+      vscode.Uri.joinPath(PreviewPanel.extensionUri, 'media'),
     ];
 
     const panel = vscode.window.createWebviewPanel(
       PreviewPanel.viewType,
       `Preview: ${path.basename(document.uri.fsPath)}`,
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { viewColumn, preserveFocus },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -74,19 +82,25 @@ export class PreviewPanel implements vscode.Disposable {
       },
     );
 
-    PreviewPanel.instance = new PreviewPanel(panel, document, mermaidPath);
+    PreviewPanel.instance = new PreviewPanel(panel, document);
     await PreviewPanel.instance.update();
   }
 
   // ───────────────── constructor ─────────────────
 
-  private constructor(panel: vscode.WebviewPanel, document: vscode.TextDocument, mermaidPath: vscode.Uri) {
+  private constructor(panel: vscode.WebviewPanel, document: vscode.TextDocument) {
     this.panel = panel;
     this.document = document;
-    this.mermaidUri = panel.webview.asWebviewUri(mermaidPath);
-    this.md = new MarkdownIt({ html: true, linkify: true, typographer: true });
-    this.md.use(markdownItMermaid);
-    this.installHeadingPlugin();
+    this.styleUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(PreviewPanel.extensionUri!, 'media', 'preview-styles.css')
+    );
+    this.markdownItUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(PreviewPanel.extensionUri!, 'media', 'markdown-it.min.js')
+    );
+    this.docDirUri = () => {
+      const dirUri = vscode.Uri.file(path.dirname(this.document.uri.fsPath));
+      return panel.webview.asWebviewUri(dirUri);
+    };
 
     // Dispose cleanup
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
@@ -121,6 +135,7 @@ export class PreviewPanel implements vscode.Disposable {
     // switching away when the user clicks a comment widget.
     this.disposables.push(
       vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (this._suppressFollowEditor) { return; }
         if (
           editor &&
           editor.document.languageId === 'markdown' &&
@@ -152,45 +167,61 @@ export class PreviewPanel implements vscode.Disposable {
     this.document = await vscode.workspace.openTextDocument(this.document.uri);
   }
 
+  /**
+   * Replace the entire document content via WorkspaceEdit (updates VS Code's
+   * in-memory model), save to disk, then refresh the preview.
+   */
+  private async replaceDocumentContent(newContent: string): Promise<void> {
+    const doc = this.document;
+    const fullRange = new vscode.Range(
+      doc.positionAt(0),
+      doc.positionAt(doc.getText().length),
+    );
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(doc.uri, fullRange, newContent);
+    await vscode.workspace.applyEdit(edit);
+    await doc.save();
+    this.document = doc;
+    await this.update();
+  }
+
   // ───────────────── WebView message handler ─────────────────
 
   private async handleWebViewMessage(msg: { command: string; [key: string]: unknown }): Promise<void> {
     switch (msg.command) {
-      case 'openSection': {
-        const line = msg.line as number;
-        await vscode.window.showTextDocument(this.document.uri, {
-          viewColumn: vscode.ViewColumn.One,
-          selection: new vscode.Range(line, 0, line, 0),
-          preserveFocus: false,
-        });
+      case 'refresh': {
+        await this.update();
         break;
       }
 
       case 'addComment': {
         await this.ensureDocumentFresh();
-        const slug = msg.slug as string;
+        const selectedText = msg.selectedText as string;
         const body = (msg.body as string || '').trim();
-        if (!body) { return; }
+        const contentOffset = (msg.contentOffset as number) || 0;
+        if (!selectedText || !body) { return; }
 
         const author = await gitService.getUserName();
-        const sections = anchorEngine.getSections(this.document);
-        const section = sections.find(s => s.slug === slug);
-        if (!section) {
-          vscode.window.showErrorMessage(`Section "${slug}" not found`);
+        const rawMarkdown = this.document.getText().replace(/\r\n/g, '\n');
+
+        const match = findSelectionInRawMarkdown(selectedText, rawMarkdown, contentOffset);
+        if (!match) {
+          vscode.window.showErrorMessage('Could not find selected text in document');
           return;
         }
+
+        const endOffset = match.start + match.text.length;
+        const anchor = anchorEngine.createAnchor(match.text, match.start, endOffset, rawMarkdown);
 
         let sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) {
           sidecar = sidecarManager.createEmptySidecar(path.basename(this.document.uri.fsPath));
         }
 
-        const anchor = anchorEngine.createAnchor(section);
         const now = new Date().toISOString();
         sidecarManager.addThread(sidecar, {
           anchor,
           status: 'open',
-          isDraft: true,
           thread: [{ id: uuidv4(), author, body, created: now, edited: null }],
         });
 
@@ -208,13 +239,6 @@ export class PreviewPanel implements vscode.Disposable {
         const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) { return; }
 
-        // Block reply on resolved threads
-        const replyThread = sidecar.comments.find(t => t.id === threadId);
-        if (replyThread && replyThread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot reply to a resolved thread. Reopen it first.');
-          return;
-        }
-
         sidecarManager.addReply(sidecar, threadId, {
           author,
           body,
@@ -222,28 +246,6 @@ export class PreviewPanel implements vscode.Disposable {
           edited: null,
         });
 
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'resolveThread': {
-        const threadId = msg.threadId as string;
-        if (!threadId) { return; }
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        sidecarManager.updateThreadStatus(sidecar, threadId, 'resolved');
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'reopenThread': {
-        const threadId = msg.threadId as string;
-        if (!threadId) { return; }
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        sidecarManager.updateThreadStatus(sidecar, threadId, 'open');
         await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
         await this.update();
         break;
@@ -257,11 +259,6 @@ export class PreviewPanel implements vscode.Disposable {
         if (!sidecar) { return; }
         const thread = sidecar.comments.find(t => t.id === threadId);
         if (!thread) { return; }
-        // Block delete on resolved threads
-        if (thread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot delete a resolved thread. Reopen it first.');
-          return;
-        }
         // Only the thread creator (first comment author) may delete the thread
         if (thread.thread[0]?.author !== currentUser) {
           vscode.window.showWarningMessage('You can only delete threads you created.');
@@ -269,33 +266,6 @@ export class PreviewPanel implements vscode.Disposable {
         }
         sidecarManager.deleteThread(sidecar, threadId);
         await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'reparentThread': {
-        const threadId = msg.threadId as string;
-        const newSlug = msg.newSlug as string;
-        if (!threadId || !newSlug) { return; }
-        await this.ensureDocumentFresh();
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        // Find the target section
-        const sections = anchorEngine.parseSections(this.document);
-        const targetSection = sections.find(s => s.slug === newSlug);
-        if (!targetSection) {
-          vscode.window.showWarningMessage('Target section not found.');
-          return;
-        }
-        // Create new anchor and reparent
-        const newAnchor = anchorEngine.createAnchor(targetSection);
-        const success = sidecarManager.reparentThread(sidecar, threadId, newAnchor);
-        if (!success) {
-          vscode.window.showWarningMessage('Thread not found.');
-          return;
-        }
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        console.log(`[MarkdownThreads] Reparented thread ${threadId} to section "${targetSection.heading}"`);
         await this.update();
         break;
       }
@@ -309,11 +279,6 @@ export class PreviewPanel implements vscode.Disposable {
         if (!sidecar) { return; }
         const thread = sidecar.comments.find(t => t.id === threadId);
         if (!thread) { return; }
-        // Block delete on resolved threads
-        if (thread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot delete a comment in a resolved thread. Reopen it first.');
-          return;
-        }
         const entry = thread.thread.find(c => c.id === commentId);
         if (!entry) { return; }
         // Only the comment author may delete their own comment
@@ -327,25 +292,6 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
 
-      case 'toggleReaction': {
-        const threadId = msg.threadId as string;
-        const commentId = msg.commentId as string;
-        if (!threadId || !commentId) { return; }
-        const currentUser = await gitService.getUserName();
-        const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-        if (!sidecar) { return; }
-        sidecarManager.toggleReaction(sidecar, threadId, commentId, currentUser);
-        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'preview');
-        await this.update();
-        break;
-      }
-
-      case 'publishDrafts': {
-        await this.handlePublishFromPreview();
-        await this.update();
-        break;
-      }
-
       case 'editComment': {
         const threadId = msg.threadId as string;
         const commentId = msg.commentId as string;
@@ -354,13 +300,8 @@ export class PreviewPanel implements vscode.Disposable {
         const currentUser = await gitService.getUserName();
         const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) { return; }
-        // Block edit on resolved threads
         const editThread = sidecar.comments.find(t => t.id === threadId);
         if (!editThread) { return; }
-        if (editThread.status === 'resolved') {
-          vscode.window.showWarningMessage('Cannot edit a comment in a resolved thread. Reopen it first.');
-          return;
-        }
         // Verify ownership
         const editEntry = editThread.thread.find(c => c.id === commentId);
         if (!editEntry || editEntry.author !== currentUser) {
@@ -372,29 +313,107 @@ export class PreviewPanel implements vscode.Disposable {
         await this.update();
         break;
       }
+
+      case 'openExternal': {
+        const url = msg.url as string;
+        if (url && /^https?:\/\//i.test(url)) {
+          vscode.commands.executeCommand('simpleBrowser.show', url);
+        }
+        break;
+      }
+
+      case 'openInternalDoc': {
+        const relativePath = msg.relativePath as string;
+        if (!relativePath) { return; }
+
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(this.document.uri);
+        if (!workspaceFolder) {
+          vscode.window.showWarningMessage('Cannot navigate: document is not in a workspace.');
+          return;
+        }
+
+        const resolved = resolveInternalDocLink(
+          this.document.uri.fsPath,
+          relativePath,
+          workspaceFolder.uri.fsPath,
+        );
+        if (!resolved) {
+          vscode.window.showWarningMessage('Cannot open link: target is not a valid markdown file within the workspace.');
+          return;
+        }
+
+        try {
+          const targetUri = vscode.Uri.file(resolved.filePath);
+          const targetDoc = await vscode.workspace.openTextDocument(targetUri);
+
+          // Push current document onto navigation history before switching
+          this._navHistory.push(this.document.uri);
+
+          // Suppress follow-editor briefly so the preview doesn't snap back
+          this._suppressFollowEditor = true;
+          if (this._suppressFollowTimeout) { clearTimeout(this._suppressFollowTimeout); }
+          this._suppressFollowTimeout = setTimeout(() => { this._suppressFollowEditor = false; }, 2000);
+
+          this.document = targetDoc;
+          this.panel.title = `Preview: ${path.basename(targetDoc.uri.fsPath)}`;
+          await this.update();
+
+          // Scroll to fragment if present
+          if (resolved.fragment) {
+            this.panel.webview.postMessage({ command: 'scrollToFragment', fragment: resolved.fragment });
+          }
+        } catch {
+          vscode.window.showWarningMessage(`Cannot open document: file not found.`);
+        }
+        break;
+      }
+
+      case 'navigateBack': {
+        if (this._navHistory.length === 0) { return; }
+        const previousUri = this._navHistory.pop()!;
+        try {
+          const previousDoc = await vscode.workspace.openTextDocument(previousUri);
+
+          this._suppressFollowEditor = true;
+          if (this._suppressFollowTimeout) { clearTimeout(this._suppressFollowTimeout); }
+          this._suppressFollowTimeout = setTimeout(() => { this._suppressFollowEditor = false; }, 2000);
+
+          this.document = previousDoc;
+          this.panel.title = `Preview: ${path.basename(previousDoc.uri.fsPath)}`;
+          await this.update();
+        } catch {
+          vscode.window.showWarningMessage('Cannot navigate back: previous document is no longer available.');
+        }
+        break;
+      }
+
+      case 'editSpecitField': {
+        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
+        if (!specitOn) { return; }
+        await this.ensureDocumentFresh();
+        const fieldName = msg.fieldName as string;
+        const newValue = (msg.newValue as string || '').trim();
+        if (!fieldName || !newValue) { return; }
+        const raw = this.document.getText().replace(/\r\n/g, '\n');
+        const updated = updateSpecitField(raw, fieldName, newValue);
+        if (updated === raw) { return; }
+        await this.replaceDocumentContent(updated);
+        break;
+      }
+
+      case 'changeSpecitStatus': {
+        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
+        if (!specitOn) { return; }
+        await this.ensureDocumentFresh();
+        const newStatus = (msg.newStatus as string || '').trim();
+        if (!newStatus) { return; }
+        const raw = this.document.getText().replace(/\r\n/g, '\n');
+        const updated = updateSpecitField(raw, 'Status', newStatus);
+        if (updated === raw) { return; }
+        await this.replaceDocumentContent(updated);
+        break;
+      }
     }
-  }
-
-  // ───────────────── markdown-it heading plugin ─────────────────
-
-  /** Adds slug-based IDs and data attributes to heading tokens. */
-  private installHeadingPlugin(): void {
-    const originalRule = this.md.renderer.rules.heading_open;
-
-    this.md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
-      const token = tokens[idx];
-      const nextToken = tokens[idx + 1];
-      if (nextToken?.type === 'inline' && nextToken.content) {
-        const slug = slugify(nextToken.content);
-        token.attrSet('id', slug);
-        token.attrSet('data-slug', slug);
-        token.attrJoin('class', 'section-heading');
-      }
-      if (originalRule) {
-        return originalRule(tokens, idx, options, env, self);
-      }
-      return self.renderToken(tokens, idx, options);
-    };
   }
 
   // ───────────────── update / render ─────────────────
@@ -411,88 +430,127 @@ export class PreviewPanel implements vscode.Disposable {
   }
 
   private async update(): Promise<void> {
+    if (this._isUpdating) { return; }
+    this._isUpdating = true;
+    try {
     // Ensure document reference is fresh (in case editor tab was closed)
     await this.ensureDocumentFresh();
 
-    // Fresh section parse
-    anchorEngine.clearCache(this.document.uri.toString());
-    const sections = anchorEngine.getSections(this.document);
+    const rawMarkdown = this.document.getText().replace(/\r\n/g, '\n');
 
-    // Render markdown → HTML
-    let html = this.md.render(this.document.getText());
-    html = this.fixLocalImagePaths(html);
-
-    // Build per-slug comment data
+    // Load comments and run stale detection
     const sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
-    const commentsBySlug: Record<string, { thread: AppCommentThread; isStale: boolean; reparentCandidate?: { slug: string; heading: string } }[]> = {};
+    let threads: AppCommentThread[] = [];
 
     if (sidecar) {
-      for (const thread of sidecar.comments) {
-        const result = anchorEngine.findAnchoredSection(sections, thread.anchor);
-        const slug = thread.anchor.sectionSlug;
-        
-        // Check for reparent candidate if section not found (orphaned)
-        let reparentCandidate: { slug: string; heading: string } | undefined;
-        if (!result) {
-          const candidate = anchorEngine.findReparentCandidate(sections, thread.anchor);
-          if (candidate) {
-            reparentCandidate = { slug: candidate.slug, heading: candidate.heading };
-          }
-        }
-        
-        (commentsBySlug[slug] ??= []).push({
-          thread,
-          isStale: result ? result.isStale : true,
-          reparentCandidate,
-        });
+      // Stale detection updates anchors in-place when text moves
+      const { updates: staleUpdates, anchorsMoved } = anchorEngine.detectStaleThreads(rawMarkdown, sidecar.comments);
+      for (const { thread, newStatus } of staleUpdates) {
+        thread.status = newStatus;
+      }
+      threads = sidecar.comments;
+      // Persist any anchor/status updates (including drift)
+      if (staleUpdates.length > 0 || anchorsMoved) {
+        await sidecarManager.writeSidecar(this.document.uri.fsPath, sidecar, 'internal');
       }
     }
 
-    // slug → line map for click navigation
-    const sectionLines: Record<string, number> = {};
-    for (const s of sections) {
-      sectionLines[s.slug] = s.startLine;
-    }
+    // Sort threads by document position
+    threads.sort((a, b) => a.anchor.markdownRange.startOffset - b.anchor.markdownRange.startOffset);
 
-    // All available sections for manual reparent dropdown
-    const allSections = sections.map(s => ({ slug: s.slug, heading: s.heading }));
+    // Build WebView data with occurrence indices for highlight disambiguation
+    const threadsData = threads.map(t => {
+      const sameTextBefore = threads.filter(
+        other => other.anchor.selectedText === t.anchor.selectedText &&
+                 other.anchor.markdownRange.startOffset < t.anchor.markdownRange.startOffset,
+      ).length;
+      return {
+        id: t.id,
+        selectedText: t.anchor.selectedText,
+        occurrenceIndex: sameTextBefore,
+        status: t.status,
+        color: t.color,
+        thread: t.thread,
+        startOffset: t.anchor.markdownRange.startOffset,
+      };
+    });
 
-    // Resolve current user for author-gated actions
     const currentUser = await gitService.getUserName();
 
     this.panel.title = `Preview: ${path.basename(this.document.uri.fsPath)}`;
-    this.panel.webview.html = this.buildHtml(html, commentsBySlug, sectionLines, currentUser, allSections);
-  }
-
-  /** Convert relative image paths to webview-safe URIs. */
-  private fixLocalImagePaths(html: string): string {
-    const docDir = path.dirname(this.document.uri.fsPath);
-    return html.replace(
-      /(<img[^>]*\ssrc=")(?!https?:\/\/|data:)([^"]+)/g,
-      (_match, prefix: string, src: string) => {
-        const absPath = path.resolve(docDir, src);
-        const webviewUri = this.panel.webview.asWebviewUri(vscode.Uri.file(absPath));
-        return prefix + webviewUri.toString();
-      },
-    );
+    this.panel.webview.html = this.buildHtml(rawMarkdown, threadsData, currentUser);
+    } finally {
+      this._isUpdating = false;
+    }
   }
 
   // ───────────────── HTML template ─────────────────
 
   private buildHtml(
-    renderedMarkdown: string,
-    commentsBySlug: Record<string, { thread: AppCommentThread; isStale: boolean; reparentCandidate?: { slug: string; heading: string } }[]>,
-    sectionLines: Record<string, number>,
+    rawMarkdown: string,
+    threads: Array<{
+      id: string;
+      selectedText: string;
+      occurrenceIndex: number;
+      status: string;
+      color?: string;
+      thread: Array<{ id: string; author: string; body: string; created: string; edited: string | null }>;
+      startOffset: number;
+    }>,
     currentUser: string,
-    allSections: { slug: string; heading: string }[],
   ): string {
     const nonce = getNonce();
     const cspSource = this.panel.webview.cspSource;
-    // Prevent </script> inside JSON from breaking the page
-    const commentsJson = JSON.stringify(commentsBySlug).replace(/</g, '\\u003c');
-    const linesJson = JSON.stringify(sectionLines);
+    const threadsJson = JSON.stringify(threads).replace(/</g, '\\u003c');
     const userJson = JSON.stringify(currentUser).replace(/</g, '\\u003c');
-    const sectionsJson = JSON.stringify(allSections).replace(/</g, '\\u003c');
+    let docTitle = path.basename(this.document.uri.fsPath);
+    const docDirBase = this.docDirUri().toString();
+
+    // SPECIT header detection — pass data to WebView JS for in-place replacement
+    // SPECIT header detection
+    let specitDataJson = 'null';
+    let specitStatusRowHtml = '';
+
+    let docSubtitleHtml = '';
+
+    const specitEnabled = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
+    const specitHeader = specitEnabled ? parseSpecitHeader(rawMarkdown) : null;
+    if (specitHeader) {
+      const docType = inferSpecitDocType(this.document.uri.fsPath);
+      const statusOptions = STATUS_OPTIONS[docType] ?? STATUS_OPTIONS['Other'];
+      specitDataJson = JSON.stringify({
+        fields: specitHeader.fields,
+        editableFields: [...EDITABLE_FIELDS],
+        statusOptions,
+      }).replace(/</g, '\\u003c');
+
+      // Override title with Project name when available
+      if (specitHeader.fields['Project']) {
+        docTitle = specitHeader.fields['Project'];
+      }
+
+      // Subtitle with the doc type label
+      const typeLabel = specitDocTypeLabel(docType);
+      if (typeLabel) {
+        docSubtitleHtml = `\n          <p class="doc-subtitle">${escapeHtml(typeLabel)}</p>`;
+      }
+
+      // Status toggle buttons for the static doc-header
+      const statusValue = specitHeader.fields['Status'];
+      if (statusValue) {
+        const normalized = statusValue.toLowerCase();
+        const btns = statusOptions
+          .map(opt => {
+            const optNorm = opt.toLowerCase();
+            const isActive = optNorm === normalized;
+            const colorClass = `specit-status-btn-${optNorm}`;
+            const activeClass = isActive ? 'specit-status-btn-active' : '';
+            return `<button class="specit-status-btn ${colorClass} ${activeClass}" data-status="${escapeHtml(opt)}">${escapeHtml(opt)}</button>`;
+          })
+          .join('');
+        specitStatusRowHtml = `\n        <div class="specit-status-row">${btns}</div>`;
+      }
+    }
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -500,122 +558,54 @@ export class PreviewPanel implements vscode.Disposable {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; img-src ${cspSource} https: data:; font-src ${cspSource};">
-  <script src="${this.mermaidUri}"></script>
-  <style>
-${PREVIEW_CSS}
-  </style>
+        content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline' https://cdn.jsdelivr.net 'nonce-${nonce}' 'unsafe-eval'; img-src ${cspSource} https: data:; font-src ${cspSource};">
+  <link href="${this.styleUri}" rel="stylesheet">
+  <title>${escapeHtml(docTitle)}</title>
 </head>
 <body>
   <div id="layout">
-    <div id="content">
-      ${renderedMarkdown}
+    <div id="content-scroll">
+      <div class="doc-header">
+        <div class="doc-header-row">
+          <h1>${escapeHtml(docTitle)}</h1>
+          <div class="doc-header-actions">
+            <button class="back-btn" id="backBtn" title="Go back to previous document" style="display:${this._navHistory.length > 0 ? 'inline-flex' : 'none'}">&#x2190; Back</button>
+            <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
+          </div>
+        </div>${docSubtitleHtml}${specitStatusRowHtml}
+      </div>
+      <div class="find-bar" id="findBar">
+        <input type="text" id="findInput" placeholder="Find in document\u2026" autocomplete="off" />
+        <span class="find-info" id="findInfo"></span>
+        <button id="findPrev" title="Previous match (Shift+Enter)" disabled>&#x25B2;</button>
+        <button id="findNext" title="Next match (Enter)" disabled>&#x25BC;</button>
+        <button id="findClose" title="Close (Escape)">&#x2715;</button>
+      </div>
+      <div class="doc-content" id="content"></div>
     </div>
     <div id="resize-handle" title="Drag to resize sidebar"></div>
     <div id="sidebar">
       <div class="sidebar-header">
-        <span>Threads <span id="thread-count-badge" class="thread-count-badge"></span></span>
-        <button id="publish-btn" class="publish-btn" style="display:none" title="Publish draft comments as PR">Publish</button>
+        <span>Comments <span id="thread-count-badge" class="thread-count-badge"></span></span>
       </div>
       <div id="sidebar-content"></div>
-      <div id="sidebar-stats"></div>
     </div>
   </div>
+  <div id="comment-toolbar">
+    <button id="toolbar-comment-btn">\uD83D\uDCAC Comment</button>
+  </div>
+  <script src="${this.markdownItUri}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script nonce="${nonce}">
-    const commentsBySlug = ${commentsJson};
-    const sectionLines = ${linesJson};
+    const threads = ${threadsJson};
     const currentUser = ${userJson};
-    const allSections = ${sectionsJson};
+    const rawMarkdown = ${JSON.stringify(rawMarkdown)};
+    const docDirBase = ${JSON.stringify(docDirBase)};
+    const specitData = ${specitDataJson};
 ${PREVIEW_JS}
   </script>
 </body>
 </html>`;
-  }
-
-  // ───────────────── publish from preview ─────────────────
-
-  private async handlePublishFromPreview(): Promise<void> {
-    const docPath = this.document.uri.fsPath;
-    const sidecar = await sidecarManager.readSidecar(docPath);
-
-    if (!sidecar) {
-      vscode.window.showInformationMessage('No comments to publish');
-      return;
-    }
-
-    const draftThreads = sidecarManager.getDraftThreads(sidecar);
-    if (draftThreads.length === 0) {
-      vscode.window.showInformationMessage('No draft comments to publish');
-      return;
-    }
-
-    const config = vscode.workspace.getConfiguration('markdownThreads');
-    const defaultProvider = config.get<string>('defaultProvider', 'auto');
-
-    let providerInfo = await gitService.detectProvider();
-    if (defaultProvider !== 'auto' && providerInfo) {
-      providerInfo = { ...providerInfo, provider: defaultProvider as 'github' | 'azuredevops' };
-    }
-
-    if (!providerInfo) {
-      vscode.window.showErrorMessage('Could not detect git provider. Make sure you have a remote configured.');
-      return;
-    }
-
-    const docName = path.basename(docPath);
-    const currentBranch = await gitService.getCurrentBranch();
-    const branchName = await gitService.createCommentBranch(docName);
-
-    if (!branchName) {
-      vscode.window.showErrorMessage('Failed to create branch for comments');
-      return;
-    }
-
-    sidecarManager.markAllPublished(sidecar);
-    await sidecarManager.writeSidecar(docPath, sidecar, 'internal');
-
-    const sidecarPath = sidecarManager.getSidecarPath(docPath);
-    const committed = await gitService.commitSidecarChanges(sidecarPath, docName);
-
-    if (!committed) {
-      vscode.window.showErrorMessage('Failed to commit changes');
-      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-      return;
-    }
-
-    const pushed = await gitService.pushBranch(branchName);
-    if (!pushed) {
-      vscode.window.showErrorMessage('Failed to push branch');
-      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-      return;
-    }
-
-    const baseBranch = await gitService.getDefaultBranch();
-    const title = `Feedback on ${docName}`;
-    const body = `This PR contains ${draftThreads.length} comment thread(s) on ${docName}.\n\nCreated by Markdown Review extension.`;
-
-    let result;
-    if (providerInfo.provider === 'github') {
-      result = await gitHubProvider.createPullRequest(providerInfo, branchName, baseBranch, title, body);
-    } else if (providerInfo.provider === 'azuredevops') {
-      result = await adoProvider.createPullRequest(providerInfo, branchName, baseBranch, title, body);
-    } else {
-      vscode.window.showErrorMessage('Unsupported git provider');
-      if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-      return;
-    }
-
-    if (currentBranch) { await gitService.checkoutBranch(currentBranch); }
-
-    if (result.success && result.prUrl) {
-      const autoOpen = config.get<boolean>('autoOpenPR', true);
-      if (autoOpen) {
-        vscode.env.openExternal(vscode.Uri.parse(result.prUrl));
-      }
-      vscode.window.showInformationMessage(`PR created: ${result.prUrl}`);
-    } else {
-      vscode.window.showErrorMessage(`Failed to create PR: ${result.error}`);
-    }
   }
 
   // ───────────────── dispose ─────────────────
@@ -643,628 +633,419 @@ function getNonce(): string {
   return text;
 }
 
-// ───────────────── CSS ─────────────────
-
-const PREVIEW_CSS = /* css */ `
-* { box-sizing: border-box; }
-
-body {
-  font-family: var(--vscode-markdown-font-family,
-    var(--vscode-font-family, -apple-system, BlinkMacSystemFont,
-    'Segoe WPC', 'Segoe UI', system-ui, 'Ubuntu', 'Droid Sans', sans-serif));
-  font-size: var(--vscode-markdown-font-size, var(--vscode-font-size, 14px));
-  line-height: var(--vscode-markdown-line-height, 1.6);
-  color: var(--vscode-foreground);
-  background-color: var(--vscode-editor-background);
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
-
-/* ── two‑column layout ─────────────────────── */
-
-#layout {
-  display: flex;
-  height: 100vh;
-  width: 100%;
-}
-
-#content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 32px;
-  word-wrap: break-word;
-}
-
-#sidebar {
-  width: 360px;
-  min-width: 200px;
-  max-width: 70vw;
-  border-left: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* ── resize handle ─────────────────────────── */
-
-#resize-handle {
-  width: 5px;
-  cursor: col-resize;
-  background: transparent;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 10;
-  transition: background .15s ease;
-}
-#resize-handle:hover,
-#resize-handle.active {
-  background: var(--vscode-focusBorder, #007fd4);
-}
-
-body.resizing {
-  cursor: col-resize !important;
-  user-select: none;
-}
-
-.sidebar-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  font-weight: 600;
-  font-size: 14px;
-  flex-shrink: 0;
-  color: var(--vscode-foreground);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.thread-count-badge {
-  font-size: 11px;
-  font-weight: normal;
-  color: var(--vscode-badge-foreground);
-  background: var(--vscode-badge-background);
-  padding: 1px 7px;
-  border-radius: 8px;
-  margin-left: 6px;
-}
-
-.publish-btn {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 3px;
-  border: none;
-  cursor: pointer;
-  color: var(--vscode-button-foreground, #fff);
-  background: var(--vscode-button-background, #0e639c);
-}
-.publish-btn:hover {
-  background: var(--vscode-button-hoverBackground, #1177bb);
-}
-.publish-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-#sidebar-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0;
-}
-
-.sidebar-section {
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.12));
-}
-
-.sidebar-section.highlighted {
-  background: var(--vscode-editor-findMatchHighlightBackground, rgba(255,200,0,.12));
-  transition: background .5s ease;
-}
-
-.sidebar-section-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--vscode-descriptionForeground);
-  text-transform: uppercase;
-  letter-spacing: .3px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sidebar-section-title:hover {
-  color: var(--vscode-textLink-foreground);
-}
-
-.sidebar-section-title .section-comment-count {
-  font-size: 11px;
-  font-weight: normal;
-  color: var(--vscode-badge-foreground);
-  background: var(--vscode-badge-background);
-  padding: 1px 7px;
-  border-radius: 8px;
-}
-
-.sidebar-empty {
-  padding: 20px 16px;
-  text-align: center;
-  color: var(--vscode-descriptionForeground);
-  font-size: 13px;
-}
-
-/* ── orphaned section ─────────────────────────── */
-.sidebar-section.orphaned-section {
-  background: var(--vscode-inputValidation-errorBackground, rgba(241,76,76,.04));
-  border-left: 3px solid var(--vscode-editorError-foreground, #f14c4c);
-}
-.orphaned-section-title {
-  color: var(--vscode-editorError-foreground, #f14c4c);
-}
-.orphaned-section-title::before {
-  content: '⚠ ';
-}
-
-/* ── reparent UI ─────────────────────────────── */
-.reparent-bar {
-  margin: 8px 0;
-  padding: 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.08));
-  border-radius: 4px;
-}
-.reparent-btn {
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  color: var(--vscode-button-secondaryForeground, #fff);
-  border: none;
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.reparent-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground, #45494e);
-}
-.reparent-btn strong {
-  color: var(--vscode-textLink-foreground);
-}
-.reparent-select {
-  background: var(--vscode-dropdown-background, #3c3c3c);
-  color: var(--vscode-dropdown-foreground, #ccc);
-  border: 1px solid var(--vscode-dropdown-border, #3c3c3c);
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-  min-width: 150px;
-}
-.reparent-select:focus {
-  outline: 1px solid var(--vscode-focusBorder);
-}
-
-/* ── typography ─────────────────────────────── */
-
-h1, h2, h3, h4, h5, h6 {
-  font-weight: 600;
-  margin-top: 24px;
-  margin-bottom: 16px;
-  line-height: 1.25;
-  color: var(--vscode-foreground);
-}
-h1 { font-size: 2em;   border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35)); padding-bottom: .3em; }
-h2 { font-size: 1.5em; border-bottom: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35)); padding-bottom: .3em; }
-h3 { font-size: 1.25em; }
-h4 { font-size: 1em; }
-
-p { margin: 0 0 16px; }
-
-a { color: var(--vscode-textLink-foreground); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-code {
-  font-family: var(--vscode-editor-font-family, 'Menlo', 'Monaco', 'Courier New', monospace);
-  font-size: .9em;
-  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15));
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-pre {
-  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15));
-  padding: 16px;
-  border-radius: 6px;
-  overflow-x: auto;
-}
-pre code { background: none; padding: 0; }
-
-blockquote {
-  margin: 16px 0;
-  padding: 0 16px;
-  border-left: 4px solid var(--vscode-textBlockQuote-border, rgba(127,127,127,.35));
-  color: var(--vscode-textBlockQuote-foreground, inherit);
-}
-
-table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-th, td {
-  border: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35));
-  padding: 8px 12px; text-align: left;
-}
-th {
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.1));
-  font-weight: 600;
-}
-
-img { max-width: 100%; }
-hr { border: none; border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.35)); margin: 24px 0; }
-
-ul, ol { padding-left: 2em; }
-
-/* ── comment badge on headings ─────────────── */
-
-.comment-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
-  border: none;
-  border-radius: 10px;
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: normal;
-  margin-left: 8px;
-  vertical-align: middle;
-  cursor: pointer;
-  transition: opacity .15s ease;
-}
-.comment-badge:hover { opacity: .85; }
-.comment-badge::before { content: '\\1F4AC'; font-size: 10px; margin-right: 2px; }
-
-/* ── add comment button (on headings) ──────── */
-
-.add-comment-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--vscode-descriptionForeground);
-  border: none;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 14px;
-  cursor: pointer;
-  margin-left: 6px;
-  vertical-align: middle;
-  transition: all .15s ease;
-  opacity: 0.6;
-}
-.add-comment-btn:hover {
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.15));
-  color: var(--vscode-foreground);
-  opacity: 1;
-}
-
-/* ── comment thread blocks (in sidebar) ─────── */
-
-.comment-thread-block {
-  border-left: 3px solid var(--vscode-editorInfo-foreground, #3794ff);
-  border-radius: 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.06));
-  padding: 10px 14px;
-  margin: 6px 0;
-  transition: box-shadow 0.2s ease;
-  cursor: pointer;
-}
-.comment-thread-block.focused {
-  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
-}
-.comment-thread-block.stale    { border-left-color: var(--vscode-editorWarning-foreground, #cca700); }
-.comment-thread-block.resolved { border-left-color: var(--vscode-testing-iconPassed, #73c991); opacity: .75; }
-.comment-thread-block.orphaned { border-left-color: var(--vscode-editorError-foreground, #f14c4c); background: var(--vscode-inputValidation-errorBackground, rgba(241,76,76,.08)); }
-
-.thread-status-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  margin-bottom: 6px;
-}
-.thread-status-label.open     { color: var(--vscode-editorInfo-foreground, #3794ff); }
-.thread-status-label.resolved { color: var(--vscode-testing-iconPassed, #73c991); }
-.thread-status-label.stale    { color: var(--vscode-editorWarning-foreground, #cca700); }
-.thread-status-label.orphaned { color: var(--vscode-editorError-foreground, #f14c4c); }
-
-.comment-entry { padding: 6px 0; }
-.comment-entry + .comment-entry {
-  border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.15));
-  margin-top: 4px;
-}
-
-.comment-header { display: flex; flex-direction: column; gap: 1px; margin-bottom: 2px; }
-.comment-author { font-weight: 600; font-size: 12px; color: var(--vscode-textLink-foreground); }
-.comment-time   { font-size: 11px; color: var(--vscode-descriptionForeground); }
-
-.comment-draft-badge {
-  font-size: 10px; font-weight: 600;
-  color: var(--vscode-editorWarning-foreground, #cca700);
-  background: var(--vscode-editorWarning-background, rgba(204,167,0,.1));
-  padding: 1px 6px; border-radius: 3px;
-}
-
-.comment-body { font-size: 13px; line-height: 1.5; margin-top: 2px; white-space: pre-wrap; }
-
-/* ── sidebar add‑comment button ──────────── */
-
-.sidebar-add-comment-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  background: transparent;
-  color: var(--vscode-descriptionForeground);
-  border: 1px dashed var(--vscode-widget-border, rgba(127,127,127,.25));
-  border-radius: 4px;
-  padding: 6px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  margin-top: 8px;
-  transition: all .15s ease;
-}
-.sidebar-add-comment-btn:hover {
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.15));
-  color: var(--vscode-foreground);
-  border-color: var(--vscode-focusBorder);
-}
-
-/* ── comment form ──────────────────────────── */
-
-.comment-form {
-  margin: 8px 0 4px;
-  border: 1px solid var(--vscode-input-border, rgba(127,127,127,.35));
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--vscode-input-background, rgba(0,0,0,.15));
-}
-.comment-form textarea {
-  width: 100%;
-  min-height: 60px;
-  padding: 8px 10px;
-  border: none;
-  outline: none;
-  resize: vertical;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--vscode-input-foreground, var(--vscode-foreground));
-  background: transparent;
-}
-.comment-form textarea::placeholder { color: var(--vscode-input-placeholderForeground, rgba(127,127,127,.6)); }
-.comment-form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 6px 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.06));
-}
-.comment-form-actions button {
-  padding: 4px 14px;
-  border: none;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.btn-submit {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-}
-.btn-submit:hover { background: var(--vscode-button-hoverBackground); }
-.btn-cancel {
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.2));
-  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-}
-.btn-cancel:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,.3)); }
-
-/* ── thread action buttons ─────────────── */
-
-.thread-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.12));
-}
-.thread-action-btn {
-  background: transparent;
-  border: none;
-  color: var(--vscode-textLink-foreground);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-.thread-action-btn:hover {
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.15));
-}
-
-/* ── comment action links ─────────────────── */
-
-.comment-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 4px;
-}
-
-.action-link {
-  background: none;
-  border: none;
-  color: var(--vscode-textLink-foreground);
-  font-size: 11px;
-  cursor: pointer;
-  padding: 0;
-  text-decoration: none;
-}
-.action-link:hover {
-  text-decoration: underline;
-}
-
-/* ── thumbs-up reaction button ─────────────── */
-
-.reaction-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--vscode-button-secondaryBackground, rgba(127,127,127,.15));
-  border: 1px solid var(--vscode-widget-border, rgba(127,127,127,.2));
-  border-radius: 12px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  color: var(--vscode-foreground);
-  line-height: 1.4;
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: normal;
-}
-.reaction-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,.3));
-}
-.reaction-btn.reacted {
-  background: var(--vscode-inputValidation-infoBackground, rgba(30,100,200,.2));
-  border-color: var(--vscode-textLink-foreground);
-}
-.reaction-count {
-  font-weight: 600;
-  min-width: 8px;
-  text-align: center;
-}
-
-/* ── collapsed thread divider ──────────────── */
-
-.collapsed-divider {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  cursor: pointer;
-  color: var(--vscode-textLink-foreground);
-  font-size: 12px;
-  font-weight: 500;
-}
-.collapsed-divider:hover {
-  text-decoration: underline;
-}
-.collapsed-divider::before,
-.collapsed-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--vscode-widget-border, rgba(127,127,127,.25));
-}
-
-/* ── sidebar statistics chart ─────────────── */
-
-#sidebar-stats {
-  border-top: 1px solid var(--vscode-widget-border, rgba(127,127,127,.2));
-  padding: 12px;
-  font-size: 12px;
-  flex-shrink: 0;
-}
-.stats-title {
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--vscode-foreground);
-}
-.stats-bar-container {
-  display: flex;
-  height: 16px;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 8px;
-  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127,127,127,.1));
-}
-.stats-bar-open {
-  background: var(--vscode-charts-blue, #3794ff);
-  transition: width 0.3s ease;
-}
-.stats-bar-resolved {
-  background: var(--vscode-charts-green, #89d185);
-  transition: width 0.3s ease;
-}
-.stats-legend {
-  display: flex;
-  gap: 16px;
-  color: var(--vscode-descriptionForeground);
-}
-.stats-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.stats-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.stats-dot-open {
-  background: var(--vscode-charts-blue, #3794ff);
-}
-.stats-dot-resolved {
-  background: var(--vscode-charts-green, #89d185);
-}
-.stats-dot-orphaned {
-  background: var(--vscode-charts-red, #f14c4c);
-}
-.stats-bar-orphaned {
-  background: var(--vscode-charts-red, #f14c4c);
-  transition: width 0.3s ease;
-}
-.stats-count {
-  font-weight: 600;
-}
-
-/* ── mermaid diagrams ─────────────────────────── */
-
-pre.mermaid {
-  background: transparent;
-  border: none;
-  text-align: center;
-  padding: 16px 0;
-}
-
-pre.mermaid svg {
-  max-width: 100%;
-  height: auto;
-}
-`;
 
 // ───────────────── JS (runs inside the WebView) ─────────────────
 
 const PREVIEW_JS = /* js */ `
 (function () {
   const vscode = acquireVsCodeApi();
+  const contentEl = document.getElementById('content');
+  const contentScroll = document.getElementById('content-scroll');
   const sidebarContent = document.getElementById('sidebar-content');
+  const toolbar = document.getElementById('comment-toolbar');
+  const toolbarBtn = document.getElementById('toolbar-comment-btn');
 
-  // ── mermaid initialization ─────────────────
-  (function initMermaid() {
+  // ── client-side markdown rendering ─────────
+  function renderMarkdown() {
+    if (typeof window.markdownit !== 'function') {
+      // markdown-it not yet loaded — retry after window load
+      window.addEventListener('load', function() {
+        renderMarkdown();
+        if (typeof setupSpecitHeader === 'function') { setupSpecitHeader(); }
+      }, { once: true });
+      return;
+    }
+    const md = window.markdownit({
+      html: true,
+      linkify: true,
+      typographer: true,
+      breaks: false,
+    });
+
+    // Mermaid fence renderer
+    var diagramCounter = 0;
+    const defaultFenceRenderer = md.renderer.rules.fence;
+    md.renderer.rules.fence = function(tokens, idx, options, env, self) {
+      const token = tokens[idx];
+      if (token.info.trim() === 'mermaid') {
+        var dId = 'diagram-' + (diagramCounter++);
+        return '<div class="mermaid-frame" data-diagram-id="' + dId + '">'
+          + '<div class="mermaid-frame-toolbar">'
+          + '<span class="diagram-label">&#x1F4CA; Diagram</span>'
+          + '<button data-zoom-diagram="' + dId + '" data-zoom-dir="-1" title="Zoom out">&#x2796;</button>'
+          + '<span class="zoom-level" id="zoom-label-' + dId + '">100%</span>'
+          + '<button data-zoom-diagram="' + dId + '" data-zoom-dir="1" title="Zoom in">&#x2795;</button>'
+          + '<button data-reset-diagram="' + dId + '" title="Reset view">Reset</button>'
+          + '</div>'
+          + '<div class="mermaid-frame-viewport" id="viewport-' + dId + '">'
+          + '<div class="mermaid-frame-content" id="content-' + dId + '">'
+          + '<div class="mermaid">' + md.utils.escapeHtml(token.content) + '</div>'
+          + '</div></div></div>';
+      }
+      if (defaultFenceRenderer) {
+        return defaultFenceRenderer(tokens, idx, options, env, self);
+      }
+      return '<pre><code>' + md.utils.escapeHtml(token.content) + '</code></pre>';
+    };
+
+    // Heading slug renderer
+    const defaultHeadingOpen = md.renderer.rules.heading_open;
+    md.renderer.rules.heading_open = function(tokens, idx, options, env, self) {
+      var token = tokens[idx];
+      var nextToken = tokens[idx + 1];
+      if (nextToken && nextToken.type === 'inline' && nextToken.content) {
+        var slug = nextToken.content
+          .toLowerCase()
+          .replace(/[^a-z0-9\\s-]/g, '')
+          .trim()
+          .replace(/\\s+/g, '-')
+          .replace(/-+/g, '-');
+        token.attrSet('id', slug);
+        token.attrSet('data-slug', slug);
+        token.attrJoin('class', 'section-heading');
+      }
+      if (defaultHeadingOpen) {
+        return defaultHeadingOpen(tokens, idx, options, env, self);
+      }
+      return self.renderToken(tokens, idx, options);
+    };
+
+    const rendered = md.render(rawMarkdown);
+    contentEl.innerHTML = rendered;
+
+    // Checkbox post-processing
+    document.querySelectorAll('#content li').forEach(function(li) {
+      var text = li.innerHTML;
+      if (text.startsWith('[ ] ')) {
+        li.innerHTML = '<input type="checkbox" disabled> ' + text.slice(4);
+      } else if (text.startsWith('[x] ') || text.startsWith('[X] ')) {
+        li.innerHTML = '<input type="checkbox" checked disabled> ' + text.slice(4);
+      }
+    });
+
+    // Fix relative image paths using the document directory base URI
+    document.querySelectorAll('#content img[src]').forEach(function(img) {
+      var src = img.getAttribute('src');
+      if (src && !/^https?:\\/\\//i.test(src) && !/^data:/i.test(src) && !/^vscode-/i.test(src)) {
+        img.setAttribute('src', docDirBase + '/' + src);
+      }
+    });
+
+    // Rewrite external links to data attributes to avoid VS Code interception
+    document.querySelectorAll('#content a[href]').forEach(function(a) {
+      var href = a.getAttribute('href');
+      if (href && /^https?:\\/\\//i.test(href)) {
+        a.setAttribute('data-external-url', href);
+        a.setAttribute('href', '#');
+      }
+    });
+
+    // Mark relative .md links as internal document links for in-preview navigation
+    document.querySelectorAll('#content a[href]').forEach(function(a) {
+      var href = a.getAttribute('href');
+      if (!href || href === '#') { return; }
+      // Skip already-handled external links, anchors, and special protocols
+      if (a.hasAttribute('data-external-url')) { return; }
+      if (/^(?:https?|data|vscode-|mailto):/i.test(href)) { return; }
+      if (href.charAt(0) === '#') { return; }
+      // Check if the link targets a .md file (with optional #fragment)
+      var filePart = href.split('#')[0];
+      if (filePart && /\\.md$/i.test(filePart)) {
+        a.setAttribute('data-internal-doc', href);
+        a.setAttribute('href', '#');
+        a.classList.add('internal-doc-link');
+      }
+    });
+
+    // Initialize mermaid
     if (typeof mermaid !== 'undefined') {
-      // Detect VS Code theme (light/dark) from body class or CSS variable
-      const isDark = document.body.classList.contains('vscode-dark') ||
-                     document.body.classList.contains('vscode-high-contrast') ||
-                     getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim().match(/^#[0-4]/);
+      var isDark = document.body.classList.contains('vscode-dark') ||
+                   document.body.classList.contains('vscode-high-contrast');
       mermaid.initialize({
         startOnLoad: true,
         theme: isDark ? 'dark' : 'default',
-        securityLevel: 'loose',
+        securityLevel: 'strict',
       });
     }
+  }
+  renderMarkdown();
+
+  // ── handle messages from extension host (e.g., scrollToFragment) ──
+  window.addEventListener('message', function(event) {
+    var msg = event.data;
+    if (msg && msg.command === 'scrollToFragment' && msg.fragment) {
+      var target = document.getElementById(msg.fragment);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  });
+
+  // ── SPECIT: wire up status buttons in static header + blockquote field card ──
+  function setupSpecitHeader() {
+    if (!specitData) { return; }
+
+    // Wire up status toggle buttons in the static doc-header
+    document.querySelectorAll('.specit-status-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        if (btn.classList.contains('specit-status-btn-active')) { return; }
+        var newStatus = btn.getAttribute('data-status');
+        if (newStatus) {
+          vscode.postMessage({ command: 'changeSpecitStatus', newStatus: newStatus });
+        }
+      });
+    });
+
+    // Replace the first blockquote with an interactive fields card
+    var bq = contentEl.querySelector('blockquote');
+    if (!bq) { return; }
+
+    var fields = specitData.fields;
+    var editableFields = specitData.editableFields;
+
+    var fieldsHtml = '';
+    var fieldKeys = Object.keys(fields);
+    for (var fi = 0; fi < fieldKeys.length; fi++) {
+      var key = fieldKeys[fi];
+      var val = fields[key];
+      var isEditable = editableFields.indexOf(key) !== -1;
+      var editBtn = isEditable
+        ? ' <button class="specit-edit-btn" data-field="' + key + '" title="Edit ' + key + '">Edit</button>'
+        : '';
+      fieldsHtml += '<div class="specit-field" data-field-name="' + key + '">'
+        + '<span class="specit-field-label">' + key + ':</span> '
+        + '<span class="specit-field-value">' + val + '</span>' + editBtn
+        + '</div>';
+    }
+
+    var card = document.createElement('div');
+    card.className = 'specit-header-card';
+    card.innerHTML = fieldsHtml;
+    bq.parentNode.replaceChild(card, bq);
+
+    // Wire up inline field editing
+    card.querySelectorAll('.specit-edit-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var fieldName = btn.getAttribute('data-field');
+        if (!fieldName) { return; }
+        var fieldEl = btn.closest('.specit-field');
+        if (!fieldEl) { return; }
+        var valueEl = fieldEl.querySelector('.specit-field-value');
+        if (!valueEl) { return; }
+        if (fieldEl.querySelector('.specit-edit-input')) { return; }
+
+        var currentValue = valueEl.textContent || '';
+        valueEl.style.display = 'none';
+        btn.style.display = 'none';
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'specit-edit-input';
+        input.value = currentValue;
+        fieldEl.appendChild(input);
+        input.focus();
+        input.select();
+
+        function commit() {
+          var newValue = input.value.trim();
+          if (newValue && newValue !== currentValue) {
+            vscode.postMessage({ command: 'editSpecitField', fieldName: fieldName, newValue: newValue });
+          } else {
+            cancel();
+          }
+        }
+        function cancel() {
+          input.remove();
+          valueEl.style.display = '';
+          btn.style.display = '';
+        }
+
+        input.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+        });
+        input.addEventListener('blur', function() {
+          setTimeout(function() { if (document.contains(input)) { commit(); } }, 100);
+        });
+      });
+    });
+  }
+  setupSpecitHeader();
+
+  // ── refresh button ─────────────────────────
+  document.getElementById('refreshBtn').addEventListener('click', function() {
+    vscode.postMessage({ command: 'refresh' });
+  });
+
+  // ── back button ───────────────────────────
+  var backBtn = document.getElementById('backBtn');
+  if (backBtn) {
+    backBtn.addEventListener('click', function() {
+      vscode.postMessage({ command: 'navigateBack' });
+    });
+  }
+
+  // ── highlight color palette ────────────────
+  const HIGHLIGHT_COLORS = [
+    'rgba(255, 235, 59, 0.35)',
+    'rgba(129, 199, 132, 0.35)',
+    'rgba(100, 181, 246, 0.35)',
+    'rgba(255, 183, 77, 0.35)',
+    'rgba(186, 104, 200, 0.35)',
+    'rgba(77, 208, 225, 0.35)',
+    'rgba(229, 115, 115, 0.35)',
+    'rgba(240, 98, 146, 0.35)',
+  ];
+  function getThreadColor(index) {
+    return HIGHLIGHT_COLORS[index % HIGHLIGHT_COLORS.length];
+  }
+
+  // ── link handling (external + internal docs) ─────────────────
+  contentEl.addEventListener('click', function(e) {
+    var anchor = e.target.closest('a');
+    if (!anchor) { return; }
+    // Internal document link — navigate preview to linked .md file
+    var internalDoc = anchor.getAttribute('data-internal-doc');
+    if (internalDoc) {
+      e.preventDefault();
+      vscode.postMessage({ command: 'openInternalDoc', relativePath: internalDoc });
+      return;
+    }
+    // External URL — open in simple browser
+    var externalUrl = anchor.getAttribute('data-external-url');
+    if (externalUrl) {
+      e.preventDefault();
+      vscode.postMessage({ command: 'openExternal', url: externalUrl });
+    }
+  });
+
+  // ── mermaid diagram zoom & pan ─────────────
+  var diagramStates = {};
+
+  function getDiagramState(dId) {
+    if (!diagramStates[dId]) {
+      diagramStates[dId] = { scale: 1, translateX: 0, translateY: 0 };
+    }
+    return diagramStates[dId];
+  }
+
+  function applyTransform(dId) {
+    var s = getDiagramState(dId);
+    var el = document.getElementById('content-' + dId);
+    if (el) {
+      var svg = el.querySelector('svg');
+      if (svg) {
+        if (!s.origWidth) {
+          var vb = svg.getAttribute('viewBox');
+          if (vb) {
+            var parts = vb.split(/[\\s,]+/);
+            s.origWidth = parseFloat(parts[2]) || 0;
+            s.origHeight = parseFloat(parts[3]) || 0;
+          }
+          if (!s.origWidth || !s.origHeight) {
+            var rect = svg.getBoundingClientRect();
+            s.origWidth = s.origWidth || rect.width || 400;
+            s.origHeight = s.origHeight || rect.height || 300;
+          }
+        }
+        var newW = s.origWidth * s.scale;
+        var newH = s.origHeight * s.scale;
+        svg.setAttribute('width', newW + 'px');
+        svg.setAttribute('height', newH + 'px');
+        svg.style.width = newW + 'px';
+        svg.style.height = newH + 'px';
+        svg.style.maxWidth = 'none';
+      }
+      el.style.transform = 'translate(' + s.translateX + 'px, ' + s.translateY + 'px)';
+    }
+    var label = document.getElementById('zoom-label-' + dId);
+    if (label) {
+      label.textContent = Math.round(s.scale * 100) + '%';
+    }
+  }
+
+  function zoomDiagram(dId, direction) {
+    var s = getDiagramState(dId);
+    var newScale = s.scale + direction * 0.15;
+    newScale = Math.max(0.25, Math.min(4, newScale));
+    s.scale = Math.round(newScale * 100) / 100;
+    applyTransform(dId);
+  }
+
+  function resetDiagram(dId) {
+    var s = getDiagramState(dId);
+    s.scale = 1;
+    s.translateX = 0;
+    s.translateY = 0;
+    applyTransform(dId);
+  }
+
+  // Delegated click handler for mermaid toolbar buttons (CSP blocks inline onclick)
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-zoom-diagram], [data-reset-diagram]');
+    if (!btn) { return; }
+    var zoomId = btn.getAttribute('data-zoom-diagram');
+    if (zoomId) {
+      var dir = parseInt(btn.getAttribute('data-zoom-dir'), 10) || 1;
+      zoomDiagram(zoomId, dir);
+      return;
+    }
+    var resetId = btn.getAttribute('data-reset-diagram');
+    if (resetId) {
+      resetDiagram(resetId);
+    }
+  });
+
+  // Attach wheel + drag handlers to all diagram viewports
+  (function() {
+    function setupViewport(vp) {
+      var dId = vp.id.replace('viewport-', '');
+      var dragging = false;
+      var lastX = 0, lastY = 0;
+
+      vp.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) { return; }
+        dragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        vp.classList.add('panning');
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (!dragging) { return; }
+        var s = getDiagramState(dId);
+        s.translateX += e.clientX - lastX;
+        s.translateY += e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        applyTransform(dId);
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (dragging) {
+          dragging = false;
+          vp.classList.remove('panning');
+        }
+      });
+
+      // Double-click to reset
+      vp.addEventListener('dblclick', function() {
+        resetDiagram(dId);
+      });
+    }
+
+    // Wait for Mermaid to finish rendering SVGs
+    setTimeout(function() {
+      document.querySelectorAll('.mermaid-frame-viewport').forEach(setupViewport);
+    }, 500);
   })();
 
   // ── sidebar resize logic ───────────────────
@@ -1332,7 +1113,6 @@ const PREVIEW_JS = /* js */ `
 
     form.appendChild(actions);
 
-    // Submit on Ctrl/Cmd + Enter
     textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -1380,651 +1160,567 @@ const PREVIEW_JS = /* js */ `
     });
   });
 
-  // ── helper: highlight a sidebar section ────
-  function highlightSection(sectionEl) {
-    sectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    sectionEl.classList.add('highlighted');
-    setTimeout(() => sectionEl.classList.remove('highlighted'), 1500);
+  // ── text selection → floating toolbar ──────
+  let pendingSelection = null;
+
+  function getContentTextOffset() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { return 0; }
+    const range = sel.getRangeAt(0);
+    const preRange = document.createRange();
+    preRange.selectNodeContents(contentEl);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    return preRange.toString().length;
   }
 
-  // ── helper: build a sidebar section for a slug ──
-  function buildSidebarSection(slug, headingText, heading) {
-    const threads = commentsBySlug[slug];
-
-    const section = document.createElement('div');
-    section.className = 'sidebar-section';
-    section.id = 'sidebar-' + slug;
-
-    const title = document.createElement('div');
-    title.className = 'sidebar-section-title';
-    title.textContent = headingText;
-
-    if (threads && threads.length > 0) {
-      const totalComments = threads.reduce((sum, t) => sum + t.thread.thread.length, 0);
-      const countBadge = document.createElement('span');
-      countBadge.className = 'section-comment-count';
-      countBadge.textContent = String(totalComments);
-      title.appendChild(countBadge);
-    }
-
-    // Click section title in sidebar → scroll to heading in content
-    title.addEventListener('click', () => {
-      heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    section.appendChild(title);
-
-    // Render existing comment threads
-    if (threads && threads.length > 0) {
-      threads.forEach(({ thread, isStale }) => {
-        const status = isStale ? 'stale' : thread.status;
-        const block = document.createElement('div');
-        block.className = 'comment-thread-block ' + status;
-
-        const statusLabel = document.createElement('div');
-        statusLabel.className = 'thread-status-label ' + status;
-        const statusText = document.createElement('span');
-        const labels = { open: '\u25CF Open', resolved: '\u2713 Resolved', stale: '\u26A0 Content Changed', orphaned: '\u26A0 Section Removed' };
-        statusText.textContent = (labels[status] || status) + (thread.isDraft ? '  (Draft)' : '');
-        statusLabel.appendChild(statusText);
-
-        // Thread-level thumbs-up reaction (uses first comment's reactions)
-        if (thread.thread.length > 0) {
-          const firstEntry = thread.thread[0];
-          const threadReactions = firstEntry.reactions || [];
-          const threadReactionBtn = document.createElement('button');
-          threadReactionBtn.className = 'reaction-btn' + (threadReactions.includes(currentUser) ? ' reacted' : '');
-          threadReactionBtn.title = threadReactions.length > 0 ? threadReactions.join(', ') : 'Add reaction';
-          const threadThumbsUp = document.createElement('span');
-          threadThumbsUp.textContent = '\uD83D\uDC4D';
-          threadReactionBtn.appendChild(threadThumbsUp);
-          if (threadReactions.length > 0) {
-            const threadCount = document.createElement('span');
-            threadCount.className = 'reaction-count';
-            threadCount.textContent = String(threadReactions.length);
-            threadReactionBtn.appendChild(threadCount);
-          }
-          threadReactionBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            vscode.postMessage({ command: 'toggleReaction', threadId: thread.id, commentId: firstEntry.id });
-          });
-          statusLabel.appendChild(threadReactionBtn);
-        }
-
-        block.appendChild(statusLabel);
-
-        var entryElements = [];
-        thread.thread.forEach((entry, entryIndex) => {
-          const entryEl = document.createElement('div');
-          entryEl.className = 'comment-entry';
-
-          const header = document.createElement('div');
-          header.className = 'comment-header';
-
-          const authorSpan = document.createElement('span');
-          authorSpan.className = 'comment-author';
-          authorSpan.textContent = entry.author;
-          header.appendChild(authorSpan);
-
-          const time = document.createElement('span');
-          time.className = 'comment-time';
-          try { time.textContent = new Date(entry.created).toLocaleString(); }
-          catch (_) { time.textContent = entry.created; }
-          header.appendChild(time);
-
-          entryEl.appendChild(header);
-
-          const body = document.createElement('div');
-          body.className = 'comment-body';
-          body.textContent = entry.body;
-          entryEl.appendChild(body);
-
-          // Per-comment action links (only for the comment author, and only on non-resolved threads)
-          if (entry.author === currentUser && status !== 'resolved') {
-            const commentActions = document.createElement('div');
-            commentActions.className = 'comment-actions';
-
-            const editLink = document.createElement('button');
-            editLink.className = 'action-link';
-            editLink.textContent = 'Edit';
-            editLink.addEventListener('click', (e) => {
-              e.stopPropagation();
-              // Toggle: if edit form already open, close it
-              const existing = entryEl.querySelector('.comment-form');
-              if (existing) { existing.remove(); body.style.display = ''; return; }
-              body.style.display = 'none';
-              const { form, textarea } = createCommentForm({
-                placeholder: 'Edit your comment...',
-                submitLabel: 'Save',
-                onSubmit: (text) => {
-                  vscode.postMessage({ command: 'editComment', threadId: thread.id, commentId: entry.id, body: text });
-                }
-              });
-              textarea.value = entry.body;
-              // On cancel, restore body visibility
-              const cancelBtn = form.querySelector('.btn-cancel');
-              if (cancelBtn) {
-                cancelBtn.addEventListener('click', () => { body.style.display = ''; });
-              }
-              entryEl.insertBefore(form, commentActions);
-              textarea.focus();
-            });
-            commentActions.appendChild(editLink);
-
-            const deleteLink = document.createElement('button');
-            deleteLink.className = 'action-link';
-            deleteLink.textContent = 'Delete';
-            deleteLink.addEventListener('click', (e) => {
-              e.stopPropagation();
-              vscode.postMessage({ command: 'deleteComment', threadId: thread.id, commentId: entry.id });
-            });
-            commentActions.appendChild(deleteLink);
-
-            entryEl.appendChild(commentActions);
-          }
-
-          entryElements.push(entryEl);
-        });
-
-        // Collapse/expand logic: show first & last, hide middle comments
-        if (entryElements.length > 2) {
-          block.appendChild(entryElements[0]);
-
-          var divider = document.createElement('div');
-          divider.className = 'collapsed-divider';
-          var moreCount = entryElements.length - 2;
-          divider.textContent = moreCount + ' more ' + (moreCount === 1 ? 'reply' : 'replies');
-          divider.addEventListener('click', function(e) {
-            e.stopPropagation();
-            expandThread(block);
-          });
-          block.appendChild(divider);
-
-          for (var i = 1; i < entryElements.length - 1; i++) {
-            entryElements[i].classList.add('collapsed-entry');
-            entryElements[i].style.display = 'none';
-            block.appendChild(entryElements[i]);
-          }
-
-          block.appendChild(entryElements[entryElements.length - 1]);
-          block.dataset.collapsible = 'true';
-        } else {
-          entryElements.forEach(function(el) { block.appendChild(el); });
-        }
-
-        // Auto-expand on click
-        block.addEventListener('click', function() {
-          if (block.dataset.collapsible === 'true' && !block.classList.contains('focused')) {
-            expandThread(block);
-          }
-        });
-
-        // Thread-level actions bar
-        const actionsBar = document.createElement('div');
-        actionsBar.className = 'thread-actions';
-
-        // Only show Reply button on non-resolved threads
-        if (status !== 'resolved') {
-          const replyBtn = document.createElement('button');
-          replyBtn.className = 'action-link';
-          replyBtn.textContent = '\u21A9 Reply';
-          replyBtn.addEventListener('click', () => {
-            const existing = block.querySelector('.comment-form');
-            if (existing) { existing.remove(); return; }
-            const { form, textarea } = createCommentForm({
-              placeholder: 'Write a reply...',
-              submitLabel: 'Reply',
-              onSubmit: (text) => {
-                vscode.postMessage({ command: 'replyComment', threadId: thread.id, body: text });
-              }
-            });
-            block.appendChild(form);
-            textarea.focus();
-          });
-          actionsBar.appendChild(replyBtn);
-        }
-
-        if (status === 'open' || status === 'stale') {
-          const resolveBtn = document.createElement('button');
-          resolveBtn.className = 'action-link';
-          resolveBtn.textContent = '\u2713 Resolve';
-          resolveBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'resolveThread', threadId: thread.id });
-          });
-          actionsBar.appendChild(resolveBtn);
-        } else if (status === 'resolved') {
-          const reopenBtn = document.createElement('button');
-          reopenBtn.className = 'action-link';
-          reopenBtn.textContent = '\u21BB Reopen';
-          reopenBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'reopenThread', threadId: thread.id });
-          });
-          actionsBar.appendChild(reopenBtn);
-        }
-
-        // Delete Thread link — only for the thread creator, and only on non-resolved threads
-        if (status !== 'resolved' && thread.thread.length > 0 && thread.thread[0].author === currentUser) {
-          const deleteThreadLink = document.createElement('button');
-          deleteThreadLink.className = 'action-link';
-          deleteThreadLink.textContent = '\u2715 Delete Thread';
-          deleteThreadLink.addEventListener('click', () => {
-            vscode.postMessage({ command: 'deleteThread', threadId: thread.id });
-          });
-          actionsBar.appendChild(deleteThreadLink);
-        }
-
-        block.appendChild(actionsBar);
-        section.appendChild(block);
-      });
-    }
-
-    // "Add Comment" button in sidebar
-    const sidebarAddBtn = document.createElement('button');
-    sidebarAddBtn.className = 'sidebar-add-comment-btn';
-    sidebarAddBtn.innerHTML = '&#x1F4AC; Add Comment';
-    sidebarAddBtn.addEventListener('click', () => {
-      const existing = section.querySelector('.comment-form');
-      if (existing) { existing.remove(); return; }
-      const { form, textarea } = createCommentForm({
-        placeholder: 'Share your feedback on this section...',
-        submitLabel: 'Add Comment',
-        onSubmit: (text) => {
-          vscode.postMessage({ command: 'addComment', slug: slug, body: text });
-        }
-      });
-      section.appendChild(form);
-      textarea.focus();
-    });
-    section.appendChild(sidebarAddBtn);
-
-    return { section, sidebarAddBtn };
-  }
-
-  // ── track sidebar sections ──
-  const sidebarSections = {};
-  const emptyState = document.createElement('div');
-  emptyState.className = 'sidebar-empty';
-  emptyState.textContent = 'Click a Comment button on any section heading to start a discussion.';
-
-  function updateEmptyState() {
-    if (sidebarContent.children.length === 0 ||
-        (sidebarContent.children.length === 1 && sidebarContent.contains(emptyState))) {
-      if (!sidebarContent.contains(emptyState)) {
-        sidebarContent.appendChild(emptyState);
+  contentEl.addEventListener('mouseup', function(e) {
+    setTimeout(function() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        toolbar.style.display = 'none';
+        pendingSelection = null;
+        return;
       }
-    } else if (sidebarContent.contains(emptyState)) {
-      emptyState.remove();
-    }
-  }
-
-  // ── helper: ensure a section exists in the sidebar ──
-  function ensureSidebarSection(slug, headingText, heading) {
-    if (sidebarSections[slug]) {
-      return sidebarSections[slug];
-    }
-    const result = buildSidebarSection(slug, headingText, heading);
-    sidebarSections[slug] = result;
-    sidebarContent.appendChild(result.section);
-    updateEmptyState();
-    return result;
-  }
-
-  // ── process each heading ───────────────────
-  document.querySelectorAll('[data-slug]').forEach(heading => {
-    const slug = heading.getAttribute('data-slug');
-    const headingText = heading.textContent.trim();
-    const threads = commentsBySlug[slug];
-    const hasComments = threads && threads.length > 0;
-
-    // Only add to sidebar immediately if the section has existing comments
-    if (hasComments) {
-      const totalComments = threads.reduce((sum, t) => sum + t.thread.thread.length, 0);
-      const threadCount = threads.length;
-      const result = ensureSidebarSection(slug, headingText, heading);
-
-      // Badge on the heading showing thread count → scrolls to sidebar
-      const badge = document.createElement('button');
-      badge.className = 'comment-badge';
-      badge.textContent = threadCount + ' thread' + (threadCount !== 1 ? 's' : '');
-      badge.title = totalComments + ' comment' + (totalComments !== 1 ? 's' : '') + ' in ' + threadCount + ' thread' + (threadCount !== 1 ? 's' : '');
-      badge.addEventListener('click', (e) => {
-        e.stopPropagation();
-        highlightSection(result.section);
-      });
-      heading.appendChild(badge);
-    }
-
-    // "Comment" button on every heading → adds section to sidebar & opens form
-    const headingAddBtn = document.createElement('button');
-    headingAddBtn.className = 'add-comment-btn';
-    headingAddBtn.innerHTML = '&#x1F4AC;';
-    headingAddBtn.title = 'Add a comment on this section';
-    headingAddBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const result = ensureSidebarSection(slug, headingText, heading);
-      highlightSection(result.section);
-      // Auto-open comment form after scroll
-      setTimeout(() => {
-        if (!result.section.querySelector('.comment-form')) {
-          result.sidebarAddBtn.click();
-        }
-      }, 400);
-    });
-    heading.appendChild(headingAddBtn);
+      // Ensure selection is within #content
+      const range = sel.getRangeAt(0);
+      if (!contentEl.contains(range.commonAncestorContainer)) {
+        toolbar.style.display = 'none';
+        return;
+      }
+      // Don't show toolbar if selection is inside an existing comment-highlight
+      if (range.commonAncestorContainer.parentElement &&
+          range.commonAncestorContainer.parentElement.closest('.comment-highlight')) {
+        toolbar.style.display = 'none';
+        return;
+      }
+      pendingSelection = {
+        text: sel.toString(),
+        contentOffset: getContentTextOffset(),
+      };
+      // Position toolbar near the selection
+      const rect = range.getBoundingClientRect();
+      toolbar.style.display = 'block';
+      toolbar.style.left = Math.max(4, rect.left + rect.width / 2 - 50) + 'px';
+      toolbar.style.top = Math.max(4, rect.top - 40) + 'px';
+    }, 10);
   });
 
-  // ── render orphaned threads (section no longer exists) ──
-  (function renderOrphanedThreads() {
-    // Collect slugs that have a [data-slug] heading in the document
-    const existingSlugs = new Set();
-    document.querySelectorAll('[data-slug]').forEach(el => {
-      existingSlugs.add(el.getAttribute('data-slug'));
+  // Hide toolbar on scroll or click outside
+  contentScroll.addEventListener('scroll', function() { toolbar.style.display = 'none'; });
+  document.addEventListener('mousedown', function(e) {
+    if (!toolbar.contains(e.target) && e.target !== toolbar) {
+      toolbar.style.display = 'none';
+    }
+  });
+
+  // Toolbar "Comment" button → open form in sidebar
+  toolbarBtn.addEventListener('click', function() {
+    if (!pendingSelection) { return; }
+    const selData = pendingSelection;
+    toolbar.style.display = 'none';
+
+    // Create inline form at the top of sidebar
+    const existing = sidebarContent.querySelector('.new-comment-form');
+    if (existing) { existing.remove(); }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'new-comment-form';
+    wrapper.style.padding = '12px 16px';
+    wrapper.style.borderBottom = '1px solid var(--vscode-widget-border, rgba(127,127,127,.12))';
+
+    const excerpt = document.createElement('div');
+    excerpt.className = 'thread-excerpt';
+    excerpt.style.borderLeftColor = 'var(--vscode-textLink-foreground)';
+    var excerptText = selData.text.length > 60 ? selData.text.substring(0, 60) + '\\u2026' : selData.text;
+    excerpt.textContent = '\\u201C' + excerptText + '\\u201D';
+    wrapper.appendChild(excerpt);
+
+    const { form, textarea } = createCommentForm({
+      placeholder: 'Comment on selected text...',
+      submitLabel: 'Add Comment',
+      onSubmit: function(text) {
+        vscode.postMessage({
+          command: 'addComment',
+          selectedText: selData.text,
+          contentOffset: selData.contentOffset,
+          body: text,
+        });
+        wrapper.remove();
+      }
+    });
+    // Augment cancel to also remove wrapper
+    var cancelBtn = form.querySelector('.btn-cancel');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function() { wrapper.remove(); });
+    }
+    wrapper.appendChild(form);
+    sidebarContent.insertBefore(wrapper, sidebarContent.firstChild);
+    textarea.focus();
+  });
+
+  // ── highlight rendering ────────────────────
+  function applyHighlights() {
+    // Remove existing highlights
+    contentEl.querySelectorAll('.comment-highlight').forEach(function(mark) {
+      var parent = mark.parentNode;
+      while (mark.firstChild) { parent.insertBefore(mark.firstChild, mark); }
+      parent.removeChild(mark);
+      parent.normalize();
     });
 
-    // Find slugs in commentsBySlug that don't have a corresponding heading
-    const orphanedSlugs = Object.keys(commentsBySlug).filter(slug => !existingSlugs.has(slug));
-    if (orphanedSlugs.length === 0) { return; }
+    // Apply highlights for each thread
+    threads.forEach(function(thread, threadIndex) {
+      var color = thread.color || getThreadColor(threadIndex);
+      findAndWrapText(thread.selectedText, thread.occurrenceIndex, color, thread.id);
+    });
+  }
 
-    // Create orphaned section container
-    const orphanedSection = document.createElement('div');
-    orphanedSection.className = 'sidebar-section orphaned-section';
-    orphanedSection.id = 'sidebar-orphaned';
+  function findAndWrapText(searchText, occurrenceIndex, color, threadId) {
+    if (!contentEl || !searchText) { return; }
 
-    const orphanedTitle = document.createElement('div');
-    orphanedTitle.className = 'sidebar-section-title orphaned-section-title';
-    orphanedTitle.textContent = 'Orphaned Comments';
-
-    // Count total orphaned comments
-    let totalOrphanedComments = 0;
-    orphanedSlugs.forEach(slug => {
-      const threads = commentsBySlug[slug];
-      if (threads) {
-        totalOrphanedComments += threads.reduce((sum, t) => sum + t.thread.thread.length, 0);
+    // Build flat text map from DOM text nodes
+    var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        var parent = node.parentNode;
+        while (parent && parent !== contentEl) {
+          var tag = parent.nodeName.toLowerCase();
+          if (tag === 'script' || tag === 'style') { return NodeFilter.FILTER_REJECT; }
+          parent = parent.parentNode;
+        }
+        return NodeFilter.FILTER_ACCEPT;
       }
     });
 
-    const countBadge = document.createElement('span');
-    countBadge.className = 'section-comment-count';
-    countBadge.textContent = String(totalOrphanedComments);
-    orphanedTitle.appendChild(countBadge);
+    var fullText = '';
+    var nodes = [];
+    var current;
+    while ((current = walker.nextNode())) {
+      nodes.push({ node: current, offset: fullText.length });
+      fullText += current.textContent;
+    }
 
-    orphanedSection.appendChild(orphanedTitle);
+    // Find Nth occurrence
+    var found = 0;
+    var pos = 0;
+    var matchStart = -1;
+    while (pos <= fullText.length - searchText.length) {
+      var idx = fullText.indexOf(searchText, pos);
+      if (idx === -1) { break; }
+      if (found === occurrenceIndex) {
+        matchStart = idx;
+        break;
+      }
+      found++;
+      pos = idx + 1;
+    }
 
-    // Render each orphaned thread
-    orphanedSlugs.forEach(slug => {
-      const threads = commentsBySlug[slug];
-      if (!threads) { return; }
+    if (matchStart === -1) { return; }
+    var matchEnd = matchStart + searchText.length;
 
-      threads.forEach(({ thread, reparentCandidate }) => {
-        const status = 'orphaned';
-        const block = document.createElement('div');
-        block.className = 'comment-thread-block ' + status;
+    // Find affected text nodes and wrap them
+    var affected = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var nd = nodes[i];
+      var nodeEnd = nd.offset + nd.node.textContent.length;
+      if (nodeEnd <= matchStart || nd.offset >= matchEnd) { continue; }
+      affected.push(nd);
+    }
 
-        const statusLabel = document.createElement('div');
-        statusLabel.className = 'thread-status-label ' + status;
-        const statusText = document.createElement('span');
-        const labels = { orphaned: '\u26A0 Section Removed' };
-        statusText.textContent = (labels[status] || status) + (thread.isDraft ? '  (Draft)' : '');
-        statusLabel.appendChild(statusText);
+    // Process in reverse to avoid offset shifts
+    for (var j = affected.length - 1; j >= 0; j--) {
+      var nd = affected[j];
+      var nodeLen = nd.node.textContent.length;
+      var wrapStart = Math.max(0, matchStart - nd.offset);
+      var wrapEnd = Math.min(nodeLen, matchEnd - nd.offset);
 
-        // Thread-level thumbs-up reaction for orphaned thread (read-only)
-        if (thread.thread.length > 0) {
-          const firstEntry = thread.thread[0];
-          const threadReactions = firstEntry.reactions || [];
-          if (threadReactions.length > 0) {
-            const threadReactionBtn = document.createElement('button');
-            threadReactionBtn.className = 'reaction-btn' + (threadReactions.includes(currentUser) ? ' reacted' : '');
-            threadReactionBtn.title = threadReactions.join(', ');
-            threadReactionBtn.disabled = true;
-            const threadThumbsUp = document.createElement('span');
-            threadThumbsUp.textContent = '\uD83D\uDC4D';
-            threadReactionBtn.appendChild(threadThumbsUp);
-            const threadCount = document.createElement('span');
-            threadCount.className = 'reaction-count';
-            threadCount.textContent = String(threadReactions.length);
-            threadReactionBtn.appendChild(threadCount);
-            statusLabel.appendChild(threadReactionBtn);
-          }
-        }
+      var text = nd.node.textContent;
+      var before = text.substring(0, wrapStart);
+      var middle = text.substring(wrapStart, wrapEnd);
+      var after = text.substring(wrapEnd);
 
-        // Show original section slug as reference
-        const slugRef = document.createElement('div');
-        slugRef.style.cssText = 'font-size: 10px; color: var(--vscode-descriptionForeground); margin-bottom: 4px;';
-        slugRef.textContent = 'Was: #' + slug;
-        block.appendChild(statusLabel);
-        block.appendChild(slugRef);
+      var parent = nd.node.parentNode;
+      var mark = document.createElement('mark');
+      mark.className = 'comment-highlight';
+      mark.dataset.threadId = threadId;
+      mark.style.backgroundColor = color;
+      mark.textContent = middle;
 
-        // Reparent UI: show auto-match button or dropdown
-        if (reparentCandidate) {
-          const reparentBar = document.createElement('div');
-          reparentBar.className = 'reparent-bar';
-          const reparentBtn = document.createElement('button');
-          reparentBtn.className = 'reparent-btn';
-          reparentBtn.innerHTML = '\uD83D\uDD17 Reparent to: <strong>' + reparentCandidate.heading + '</strong>';
-          reparentBtn.title = 'Move this thread to the section "' + reparentCandidate.heading + '"';
-          reparentBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'reparentThread', threadId: thread.id, newSlug: reparentCandidate.slug });
-          });
-          reparentBar.appendChild(reparentBtn);
-          block.appendChild(reparentBar);
-        } else if (allSections.length > 0) {
-          // Manual reparent dropdown
-          const reparentBar = document.createElement('div');
-          reparentBar.className = 'reparent-bar';
-          const reparentLabel = document.createElement('span');
-          reparentLabel.textContent = '\uD83D\uDD17 Reparent to: ';
-          reparentLabel.style.cssText = 'font-size: 11px; color: var(--vscode-descriptionForeground);';
-          reparentBar.appendChild(reparentLabel);
-          const reparentSelect = document.createElement('select');
-          reparentSelect.className = 'reparent-select';
-          const defaultOpt = document.createElement('option');
-          defaultOpt.value = '';
-          defaultOpt.textContent = '— Select section —';
-          reparentSelect.appendChild(defaultOpt);
-          allSections.forEach(sec => {
-            const opt = document.createElement('option');
-            opt.value = sec.slug;
-            opt.textContent = sec.heading;
-            reparentSelect.appendChild(opt);
-          });
-          reparentSelect.addEventListener('change', () => {
-            if (reparentSelect.value) {
-              vscode.postMessage({ command: 'reparentThread', threadId: thread.id, newSlug: reparentSelect.value });
+      if (after) {
+        parent.insertBefore(document.createTextNode(after), nd.node.nextSibling);
+      }
+      parent.insertBefore(mark, nd.node.nextSibling);
+      if (before) {
+        nd.node.textContent = before;
+      } else {
+        parent.removeChild(nd.node);
+      }
+    }
+  }
+
+  // Apply highlights on load
+  applyHighlights();
+
+  // ── click highlight → scroll to sidebar thread ──
+  contentEl.addEventListener('click', function(e) {
+    var mark = e.target.closest('.comment-highlight');
+    if (!mark) { return; }
+    var threadId = mark.dataset.threadId;
+    var threadBlock = document.querySelector('.comment-thread-block[data-thread-id="' + threadId + '"]');
+    if (threadBlock) {
+      threadBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      threadBlock.classList.add('focused');
+      if (threadBlock.dataset.collapsible === 'true') { expandThread(threadBlock); }
+      // Remove active from other highlights
+      contentEl.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
+      contentEl.querySelectorAll('.comment-highlight[data-thread-id="' + threadId + '"]').forEach(function(m) { m.classList.add('active'); });
+    }
+  });
+
+  // ── build sidebar thread list ──────────────
+  var emptyState = document.createElement('div');
+  emptyState.className = 'sidebar-empty';
+  emptyState.textContent = 'Select text in the document and click Comment to start a discussion.';
+
+  if (threads.length === 0) {
+    sidebarContent.appendChild(emptyState);
+  }
+
+  threads.forEach(function(thread, threadIndex) {
+    var status = thread.status;
+    var color = thread.color || getThreadColor(threadIndex);
+
+    var block = document.createElement('div');
+    block.className = 'comment-thread-block ' + status;
+    block.dataset.threadId = thread.id;
+
+    // Highlighted text excerpt
+    var excerpt = document.createElement('div');
+    excerpt.className = 'thread-excerpt';
+    excerpt.style.borderLeftColor = color;
+    var excerptText = thread.selectedText.length > 60 ? thread.selectedText.substring(0, 60) + '\\u2026' : thread.selectedText;
+    excerpt.textContent = '\\u201C' + excerptText + '\\u201D';
+    excerpt.addEventListener('click', function(e) {
+      e.stopPropagation();
+      // Scroll to the highlight in the content
+      var marks = contentEl.querySelectorAll('.comment-highlight[data-thread-id="' + thread.id + '"]');
+      if (marks.length > 0) {
+        marks[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        contentEl.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
+        marks.forEach(function(m) { m.classList.add('active'); });
+        setTimeout(function() { marks.forEach(function(m) { m.classList.remove('active'); }); }, 2000);
+      }
+    });
+    block.appendChild(excerpt);
+
+    // Status label (only shown for stale threads)
+    var statusLabel = document.createElement('div');
+    statusLabel.className = 'thread-status-label ' + status;
+    if (status === 'stale') {
+      var statusText = document.createElement('span');
+      statusText.textContent = '\\u26A0 Text Changed';
+      statusLabel.appendChild(statusText);
+    }
+
+    block.appendChild(statusLabel);
+
+    // Comment entries
+    var entryElements = [];
+    thread.thread.forEach(function(entry) {
+      var entryEl = document.createElement('div');
+      entryEl.className = 'comment-entry';
+
+      var header = document.createElement('div');
+      header.className = 'comment-header';
+
+      var authorSpan = document.createElement('span');
+      authorSpan.className = 'comment-author';
+      authorSpan.textContent = entry.author;
+      header.appendChild(authorSpan);
+
+      var time = document.createElement('span');
+      time.className = 'comment-time';
+      try { time.textContent = new Date(entry.created).toLocaleString(); }
+      catch (_) { time.textContent = entry.created; }
+      header.appendChild(time);
+
+      entryEl.appendChild(header);
+
+      var body = document.createElement('div');
+      body.className = 'comment-body';
+      body.textContent = entry.body;
+      entryEl.appendChild(body);
+
+      // Per-comment action links (only for the comment author)
+      if (entry.author === currentUser) {
+        var commentActions = document.createElement('div');
+        commentActions.className = 'comment-actions';
+
+        var editLink = document.createElement('button');
+        editLink.className = 'action-link';
+        editLink.textContent = 'Edit';
+        editLink.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var existing = entryEl.querySelector('.comment-form');
+          if (existing) { existing.remove(); body.style.display = ''; return; }
+          body.style.display = 'none';
+          var result = createCommentForm({
+            placeholder: 'Edit your comment...',
+            submitLabel: 'Save',
+            onSubmit: function(text) {
+              vscode.postMessage({ command: 'editComment', threadId: thread.id, commentId: entry.id, body: text });
             }
           });
-          reparentBar.appendChild(reparentSelect);
-          block.appendChild(reparentBar);
-        }
-
-        var orphanedEntryElements = [];
-        thread.thread.forEach((entry, entryIndex) => {
-          const entryEl = document.createElement('div');
-          entryEl.className = 'comment-entry';
-
-          const header = document.createElement('div');
-          header.className = 'comment-header';
-
-          const authorSpan = document.createElement('span');
-          authorSpan.className = 'comment-author';
-          authorSpan.textContent = entry.author;
-          header.appendChild(authorSpan);
-
-          const time = document.createElement('span');
-          time.className = 'comment-time';
-          try { time.textContent = new Date(entry.created).toLocaleString(); }
-          catch (_) { time.textContent = entry.created; }
-          header.appendChild(time);
-
-          entryEl.appendChild(header);
-
-          const body = document.createElement('div');
-          body.className = 'comment-body';
-          body.textContent = entry.body;
-          entryEl.appendChild(body);
-
-          orphanedEntryElements.push(entryEl);
-        });
-
-        // Collapse/expand for orphaned threads
-        if (orphanedEntryElements.length > 2) {
-          block.appendChild(orphanedEntryElements[0]);
-
-          var orphanedDivider = document.createElement('div');
-          orphanedDivider.className = 'collapsed-divider';
-          var orphanedMoreCount = orphanedEntryElements.length - 2;
-          orphanedDivider.textContent = orphanedMoreCount + ' more ' + (orphanedMoreCount === 1 ? 'reply' : 'replies');
-          orphanedDivider.addEventListener('click', function(e) {
-            e.stopPropagation();
-            expandThread(block);
-          });
-          block.appendChild(orphanedDivider);
-
-          for (var oi = 1; oi < orphanedEntryElements.length - 1; oi++) {
-            orphanedEntryElements[oi].classList.add('collapsed-entry');
-            orphanedEntryElements[oi].style.display = 'none';
-            block.appendChild(orphanedEntryElements[oi]);
+          result.textarea.value = entry.body;
+          var formCancelBtn = result.form.querySelector('.btn-cancel');
+          if (formCancelBtn) {
+            formCancelBtn.addEventListener('click', function() { body.style.display = ''; });
           }
-
-          block.appendChild(orphanedEntryElements[orphanedEntryElements.length - 1]);
-          block.dataset.collapsible = 'true';
-        } else {
-          orphanedEntryElements.forEach(function(el) { block.appendChild(el); });
-        }
-
-        // Auto-expand on click
-        block.addEventListener('click', function() {
-          if (block.dataset.collapsible === 'true' && !block.classList.contains('focused')) {
-            expandThread(block);
-          }
+          entryEl.insertBefore(result.form, commentActions);
+          result.textarea.focus();
         });
+        commentActions.appendChild(editLink);
 
-        // Actions bar (no reply for orphaned, but allow resolve/delete)
-        const actionsBar = document.createElement('div');
-        actionsBar.className = 'thread-actions';
+        var deleteLink = document.createElement('button');
+        deleteLink.className = 'action-link';
+        deleteLink.textContent = 'Delete';
+        deleteLink.addEventListener('click', function(e) {
+          e.stopPropagation();
+          vscode.postMessage({ command: 'deleteComment', threadId: thread.id, commentId: entry.id });
+        });
+        commentActions.appendChild(deleteLink);
 
-        if (thread.status !== 'resolved') {
-          const resolveBtn = document.createElement('button');
-          resolveBtn.className = 'action-link';
-          resolveBtn.textContent = '\u2713 Resolve';
-          resolveBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'resolveThread', threadId: thread.id });
-          });
-          actionsBar.appendChild(resolveBtn);
-        } else {
-          const reopenBtn = document.createElement('button');
-          reopenBtn.className = 'action-link';
-          reopenBtn.textContent = '\u21BB Reopen';
-          reopenBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'reopenThread', threadId: thread.id });
-          });
-          actionsBar.appendChild(reopenBtn);
-        }
+        entryEl.appendChild(commentActions);
+      }
 
-        // Delete Thread link — only for the thread creator
-        if (thread.thread.length > 0 && thread.thread[0].author === currentUser) {
-          const deleteThreadLink = document.createElement('button');
-          deleteThreadLink.className = 'action-link';
-          deleteThreadLink.textContent = '\u2715 Delete Thread';
-          deleteThreadLink.addEventListener('click', () => {
-            vscode.postMessage({ command: 'deleteThread', threadId: thread.id });
-          });
-          actionsBar.appendChild(deleteThreadLink);
-        }
-
-        block.appendChild(actionsBar);
-        orphanedSection.appendChild(block);
-      });
+      entryElements.push(entryEl);
     });
 
-    sidebarContent.appendChild(orphanedSection);
-  })();
+    // Collapse/expand logic: show first & last, hide middle
+    if (entryElements.length > 2) {
+      block.appendChild(entryElements[0]);
 
-  updateEmptyState();
+      var divider = document.createElement('div');
+      divider.className = 'collapsed-divider';
+      var moreCount = entryElements.length - 2;
+      divider.textContent = moreCount + ' more ' + (moreCount === 1 ? 'reply' : 'replies');
+      divider.addEventListener('click', function(e) {
+        e.stopPropagation();
+        expandThread(block);
+      });
+      block.appendChild(divider);
+
+      for (var i = 1; i < entryElements.length - 1; i++) {
+        entryElements[i].classList.add('collapsed-entry');
+        entryElements[i].style.display = 'none';
+        block.appendChild(entryElements[i]);
+      }
+
+      block.appendChild(entryElements[entryElements.length - 1]);
+      block.dataset.collapsible = 'true';
+    } else {
+      entryElements.forEach(function(el) { block.appendChild(el); });
+    }
+
+    // Auto-expand on click
+    block.addEventListener('click', function() {
+      if (block.dataset.collapsible === 'true' && !block.classList.contains('focused')) {
+        expandThread(block);
+      }
+    });
+
+    // Thread-level actions bar
+    var actionsBar = document.createElement('div');
+    actionsBar.className = 'thread-actions';
+
+    var replyBtn = document.createElement('button');
+    replyBtn.className = 'action-link';
+    replyBtn.textContent = '\\u21A9 Reply';
+    replyBtn.addEventListener('click', function() {
+      var existing = block.querySelector('.comment-form');
+      if (existing) { existing.remove(); return; }
+      var result = createCommentForm({
+        placeholder: 'Write a reply...',
+        submitLabel: 'Reply',
+        onSubmit: function(text) {
+          vscode.postMessage({ command: 'replyComment', threadId: thread.id, body: text });
+        }
+      });
+      block.appendChild(result.form);
+      result.textarea.focus();
+    });
+    actionsBar.appendChild(replyBtn);
+
+    // Delete Thread link — only for the thread creator
+    if (thread.thread.length > 0 && thread.thread[0].author === currentUser) {
+      var deleteThreadLink = document.createElement('button');
+      deleteThreadLink.className = 'action-link';
+      deleteThreadLink.textContent = '\\u2715 Delete Thread';
+      deleteThreadLink.addEventListener('click', function() {
+        vscode.postMessage({ command: 'deleteThread', threadId: thread.id });
+      });
+      actionsBar.appendChild(deleteThreadLink);
+    }
+
+    block.appendChild(actionsBar);
+    sidebarContent.appendChild(block);
+  });
 
   // ── thread count badge ─────────────────────
   (function updateThreadCount() {
-    const badge = document.getElementById('thread-count-badge');
+    var badge = document.getElementById('thread-count-badge');
     if (!badge) { return; }
-    let threadCount = 0;
-    for (const slug in commentsBySlug) {
-      const threads = commentsBySlug[slug];
-      if (threads) { threadCount += threads.length; }
-    }
-    badge.textContent = String(threadCount);
-    if (threadCount === 0) { badge.style.display = 'none'; }
+    badge.textContent = String(threads.length);
+    if (threads.length === 0) { badge.style.display = 'none'; }
   })();
 
-  // ── publish button ─────────────────────────
-  (function renderPublishButton() {
-    const btn = document.getElementById('publish-btn');
-    if (!btn) { return; }
-    let draftCount = 0;
-    for (const slug in commentsBySlug) {
-      const threads = commentsBySlug[slug];
-      if (!threads) { continue; }
-      for (const t of threads) {
-        if (t.thread.isDraft) { draftCount++; }
+  // ── Find / Search feature ──────────────────
+  (function() {
+    var findBar = document.getElementById('findBar');
+    var findInput = document.getElementById('findInput');
+    var findInfo = document.getElementById('findInfo');
+    var findPrevBtn = document.getElementById('findPrev');
+    var findNextBtn = document.getElementById('findNext');
+    var findCloseBtn = document.getElementById('findClose');
+
+    var matches = [];
+    var currentMatch = -1;
+    var originalContentHTML = '';
+
+    function openFindBar() {
+      originalContentHTML = originalContentHTML || contentEl.innerHTML;
+      findBar.classList.add('visible');
+      findInput.focus();
+      findInput.select();
+    }
+
+    function closeFindBar() {
+      findBar.classList.remove('visible');
+      clearHighlights();
+      findInput.value = '';
+      findInfo.textContent = '';
+      findPrevBtn.disabled = true;
+      findNextBtn.disabled = true;
+    }
+
+    function clearHighlights() {
+      if (originalContentHTML) {
+        contentEl.innerHTML = originalContentHTML;
       }
+      matches = [];
+      currentMatch = -1;
     }
-    if (draftCount > 0) {
-      btn.style.display = '';
-      btn.textContent = 'Publish ' + draftCount + ' draft' + (draftCount > 1 ? 's' : '');
-    } else {
-      btn.style.display = 'none';
+
+    function escapeRegex(str) {
+      return str.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\\\$&');
     }
-    btn.addEventListener('click', () => {
-      btn.disabled = true;
-      btn.textContent = 'Publishing\u2026';
-      vscode.postMessage({ command: 'publishDrafts' });
-    });
-  })();
 
-  // ── statistics chart ───────────────────────
-  (function renderStats() {
-    const statsEl = document.getElementById('sidebar-stats');
-    if (!statsEl) { return; }
+    function highlightMatches(query) {
+      clearHighlights();
+      if (!query) {
+        findInfo.textContent = '';
+        findPrevBtn.disabled = true;
+        findNextBtn.disabled = true;
+        return;
+      }
 
-    // Collect existing slugs to identify orphaned threads
-    const existingSlugs = new Set();
-    document.querySelectorAll('[data-slug]').forEach(el => {
-      existingSlugs.add(el.getAttribute('data-slug'));
-    });
+      var escaped = escapeRegex(query);
+      var regex = new RegExp('(' + escaped + ')', 'gi');
 
-    let openCount = 0;
-    let resolvedCount = 0;
-    let orphanedCount = 0;
-    for (const slug in commentsBySlug) {
-      const threads = commentsBySlug[slug];
-      if (!threads) { continue; }
-      const isOrphanedSlug = !existingSlugs.has(slug);
-      for (const t of threads) {
-        if (isOrphanedSlug) {
-          orphanedCount++;
-        } else if (t.thread.status === 'resolved') {
-          resolvedCount++;
-        } else {
-          openCount++;
+      var walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, null);
+      var textNodes = [];
+      while (walker.nextNode()) { textNodes.push(walker.currentNode); }
+
+      var matchIdx = 0;
+      textNodes.forEach(function(node) {
+        var parent = node.parentNode;
+        if (!parent || parent.closest('.find-bar') || parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') { return; }
+
+        var text = node.nodeValue;
+        if (!regex.test(text)) { return; }
+        regex.lastIndex = 0;
+
+        var fragment = document.createDocumentFragment();
+        var lastIdx = 0;
+        var m;
+        while ((m = regex.exec(text)) !== null) {
+          if (m.index > lastIdx) {
+            fragment.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+          }
+          var mk = document.createElement('mark');
+          mk.className = 'search-highlight';
+          mk.dataset.matchIndex = String(matchIdx++);
+          mk.textContent = m[0];
+          fragment.appendChild(mk);
+          lastIdx = regex.lastIndex;
         }
+        if (lastIdx < text.length) {
+          fragment.appendChild(document.createTextNode(text.slice(lastIdx)));
+        }
+        parent.replaceChild(fragment, node);
+      });
+
+      matches = contentEl.querySelectorAll('.search-highlight');
+      if (matches.length > 0) {
+        currentMatch = 0;
+        setActiveMatch(0);
+        findPrevBtn.disabled = false;
+        findNextBtn.disabled = false;
+      } else {
+        findInfo.textContent = 'No results';
+        findPrevBtn.disabled = true;
+        findNextBtn.disabled = true;
       }
     }
-    const total = openCount + resolvedCount + orphanedCount;
-    if (total === 0) { statsEl.style.display = 'none'; return; }
-    statsEl.style.display = '';
-    const openPct = Math.round((openCount / total) * 100);
-    const resolvedPct = Math.round((resolvedCount / total) * 100);
-    const orphanedPct = 100 - openPct - resolvedPct;
-    let barHtml = '<div class="stats-bar-container">';
-    if (openPct > 0) { barHtml += '<div class="stats-bar-open" style="width:' + openPct + '%"></div>'; }
-    if (resolvedPct > 0) { barHtml += '<div class="stats-bar-resolved" style="width:' + resolvedPct + '%"></div>'; }
-    if (orphanedPct > 0) { barHtml += '<div class="stats-bar-orphaned" style="width:' + orphanedPct + '%"></div>'; }
-    barHtml += '</div>';
-    let legendHtml = '<div class="stats-legend">';
-    legendHtml += '<div class="stats-legend-item"><span class="stats-dot stats-dot-open"></span> Open <span class="stats-count">' + openCount + '</span></div>';
-    legendHtml += '<div class="stats-legend-item"><span class="stats-dot stats-dot-resolved"></span> Resolved <span class="stats-count">' + resolvedCount + '</span></div>';
-    if (orphanedCount > 0) {
-      legendHtml += '<div class="stats-legend-item"><span class="stats-dot stats-dot-orphaned"></span> Orphaned <span class="stats-count">' + orphanedCount + '</span></div>';
+
+    function setActiveMatch(idx) {
+      matches.forEach(function(m) { m.classList.remove('active'); });
+      if (matches.length === 0) { return; }
+      currentMatch = idx;
+      var el = matches[currentMatch];
+      el.classList.add('active');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      findInfo.textContent = (currentMatch + 1) + ' of ' + matches.length;
     }
-    legendHtml += '</div>';
-    statsEl.innerHTML = '<div class="stats-title">Thread Summary</div>' + barHtml + legendHtml;
+
+    function goNext() {
+      if (matches.length === 0) { return; }
+      setActiveMatch((currentMatch + 1) % matches.length);
+    }
+
+    function goPrev() {
+      if (matches.length === 0) { return; }
+      setActiveMatch((currentMatch - 1 + matches.length) % matches.length);
+    }
+
+    var debounceTimer;
+    findInput.addEventListener('input', function() {
+      clearTimeout(debounceTimer);
+      if (originalContentHTML) { contentEl.innerHTML = originalContentHTML; }
+      debounceTimer = setTimeout(function() {
+        originalContentHTML = contentEl.innerHTML;
+        highlightMatches(findInput.value);
+      }, 200);
+    });
+
+    findInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); goNext(); }
+      if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); goPrev(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeFindBar(); }
+    });
+
+    findPrevBtn.addEventListener('click', goPrev);
+    findNextBtn.addEventListener('click', goNext);
+    findCloseBtn.addEventListener('click', closeFindBar);
+
+    document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        openFindBar();
+      }
+      if (e.key === 'Escape' && findBar.classList.contains('visible')) {
+        closeFindBar();
+      }
+    });
   })();
 
 })();

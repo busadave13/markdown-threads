@@ -15,19 +15,23 @@ function makeSidecar(): SidecarManager {
 
 /** Helper: build a minimal valid SidecarFile */
 function emptySidecar(doc = 'test.md'): SidecarFile {
-  return { doc, version: '1.0', comments: [] };
+  return { doc, version: '2.0', comments: [] };
+}
+
+/** Helper: build a text-selection anchor */
+function makeAnchor(selectedText = 'important text', startOffset = 50, endOffset = 64) {
+  return {
+    selectedText,
+    textContext: { prefix: 'some prefix context here...', suffix: 'some suffix context here...' },
+    markdownRange: { startOffset, endOffset },
+  };
 }
 
 /** Helper: build a thread stub (Omit<CommentThread, 'id'>) */
 function threadStub(overrides: Partial<Omit<CommentThread, 'id'>> = {}): Omit<CommentThread, 'id'> {
   return {
-    anchor: {
-      sectionSlug: 'introduction',
-      contentHash: 'abc123',
-      lineHint: 0,
-    },
+    anchor: makeAnchor(),
     status: 'open',
-    isDraft: true,
     thread: [
       {
         id: 'entry-1',
@@ -68,7 +72,7 @@ suite('SidecarManager Test Suite', () => {
     const mgr = makeSidecar();
     const sc = mgr.createEmptySidecar('design.md');
     assert.strictEqual(sc.doc, 'design.md');
-    assert.strictEqual(sc.version, '1.0');
+    assert.strictEqual(sc.version, '2.0');
     assert.ok(Array.isArray(sc.comments));
     assert.strictEqual(sc.comments.length, 0);
   });
@@ -82,7 +86,7 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(sc.comments.length, 1);
     assert.ok(added.id, 'thread must receive an id');
-    assert.strictEqual(added.anchor.sectionSlug, 'introduction');
+    assert.strictEqual(added.anchor.selectedText, 'important text');
     assert.strictEqual(added.status, 'open');
     assert.strictEqual(added.thread.length, 1);
   });
@@ -91,7 +95,7 @@ suite('SidecarManager Test Suite', () => {
     const mgr = makeSidecar();
     const sc = emptySidecar();
     const t1 = mgr.addThread(sc, threadStub());
-    const t2 = mgr.addThread(sc, threadStub({ anchor: { sectionSlug: 'api', contentHash: 'xyz', lineHint: 10 } }));
+    const t2 = mgr.addThread(sc, threadStub({ anchor: makeAnchor('api endpoint', 100, 112) }));
 
     assert.strictEqual(sc.comments.length, 2);
     assert.notStrictEqual(t1.id, t2.id);
@@ -266,93 +270,6 @@ suite('SidecarManager Test Suite', () => {
     assert.strictEqual(mgr.editComment(sc, thread.id, 'no-comment', 'x'), null);
   });
 
-  // ── updateThreadStatus ───────────────────────────────────────────
-
-  test('updateThreadStatus changes status', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    const thread = mgr.addThread(sc, threadStub());
-
-    assert.strictEqual(thread.status, 'open');
-    const ok = mgr.updateThreadStatus(sc, thread.id, 'resolved');
-    assert.strictEqual(ok, true);
-    assert.strictEqual(thread.status, 'resolved');
-  });
-
-  test('updateThreadStatus returns false for unknown id', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-
-    assert.strictEqual(mgr.updateThreadStatus(sc, 'no-thread', 'resolved'), false);
-  });
-
-  // ── getDraftThreads ──────────────────────────────────────────────
-
-  test('getDraftThreads filters only drafts', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-    mgr.addThread(sc, threadStub({ isDraft: false }));
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-
-    const drafts = mgr.getDraftThreads(sc);
-    assert.strictEqual(drafts.length, 2);
-    assert.ok(drafts.every(t => t.isDraft));
-  });
-
-  test('getDraftThreads returns empty array when no drafts', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub({ isDraft: false }));
-
-    assert.strictEqual(mgr.getDraftThreads(sc).length, 0);
-  });
-
-  // ── markAllPublished ─────────────────────────────────────────────
-
-  test('markAllPublished sets isDraft to false on all threads', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-    mgr.addThread(sc, threadStub({ isDraft: true }));
-
-    mgr.markAllPublished(sc);
-    assert.ok(sc.comments.every(t => t.isDraft === false));
-  });
-
-  // ── reparentThread ──────────────────────────────────────────────
-
-  test('reparentThread updates anchor and resets status', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    const thread = mgr.addThread(sc, threadStub({
-      anchor: { sectionSlug: 'old-section', contentHash: 'old-hash', lineHint: 5 },
-      status: 'stale',
-      isDraft: false,
-    }));
-
-    const newAnchor = { sectionSlug: 'new-section', contentHash: 'new-hash', lineHint: 10 };
-    const result = mgr.reparentThread(sc, thread.id, newAnchor);
-
-    assert.strictEqual(result, true);
-    assert.strictEqual(sc.comments[0].anchor.sectionSlug, 'new-section');
-    assert.strictEqual(sc.comments[0].anchor.contentHash, 'new-hash');
-    assert.strictEqual(sc.comments[0].anchor.lineHint, 10);
-    assert.strictEqual(sc.comments[0].status, 'open', 'Status should be reset to open');
-    assert.strictEqual(sc.comments[0].isDraft, true, 'Thread should be marked as draft');
-  });
-
-  test('reparentThread returns false for unknown thread', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub());
-
-    const newAnchor = { sectionSlug: 'new-section', contentHash: 'new-hash', lineHint: 10 };
-    const result = mgr.reparentThread(sc, 'nonexistent-id', newAnchor);
-
-    assert.strictEqual(result, false);
-  });
-
   // ── File I/O round-trip ──────────────────────────────────────────
 
   test('writeSidecar and readSidecar round-trip correctly', async () => {
@@ -371,9 +288,9 @@ suite('SidecarManager Test Suite', () => {
     const loaded = await mgr.readSidecar(docPath);
     assert.ok(loaded);
     assert.strictEqual(loaded!.doc, 'design.md');
-    assert.strictEqual(loaded!.version, '1.0');
+    assert.strictEqual(loaded!.version, '2.0');
     assert.strictEqual(loaded!.comments.length, 1);
-    assert.strictEqual(loaded!.comments[0].anchor.sectionSlug, 'introduction');
+    assert.strictEqual(loaded!.comments[0].anchor.selectedText, 'important text');
 
     // Cleanup
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -419,7 +336,7 @@ suite('SidecarManager Test Suite', () => {
     const docPath = path.join(tmpDir, 'doc.md');
     const sidecarPath = mgr.getSidecarPath(docPath);
 
-    fs.writeFileSync(sidecarPath, JSON.stringify({ doc: 'doc.md', version: '2.0', comments: [] }), 'utf-8');
+    fs.writeFileSync(sidecarPath, JSON.stringify({ doc: 'doc.md', version: '3.0', comments: [] }), 'utf-8');
 
     const result = await mgr.readSidecar(docPath);
     assert.strictEqual(result, null);
@@ -448,8 +365,9 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(mgr.sidecarExists(docPath), false);
 
-    // Write a sidecar
+    // Write a sidecar with at least one thread (empty comments auto-deletes)
     const sc = emptySidecar('design.md');
+    mgr.addThread(sc, threadStub());
     await mgr.writeSidecar(docPath, sc);
 
     assert.strictEqual(mgr.sidecarExists(docPath), true);
@@ -580,6 +498,102 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(previewEvents.length, 1);
     assert.strictEqual(previewEvents[0], 'preview');
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ── deleteSidecar ──────────────────────────────────────────────────
+
+  test('deleteSidecar removes existing sidecar file', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    // Write a sidecar so it exists
+    const sc = emptySidecar('doc.md');
+    mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+    assert.strictEqual(mgr.sidecarExists(docPath), true);
+
+    await mgr.deleteSidecar(docPath);
+    assert.strictEqual(mgr.sidecarExists(docPath), false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('deleteSidecar is a no-op when file does not exist', async () => {
+    const mgr = makeSidecar();
+    // Should not throw
+    await mgr.deleteSidecar(path.join(os.tmpdir(), 'nonexistent-doc.md'));
+  });
+
+  // ── writeSidecar auto-delete on empty comments ──────────────────────
+
+  test('writeSidecar deletes sidecar file when comments array is empty', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    // Create a sidecar with a thread
+    const sc = emptySidecar('doc.md');
+    mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+    assert.strictEqual(mgr.sidecarExists(docPath), true);
+
+    // Remove all threads and write — should delete the file
+    sc.comments = [];
+    await mgr.writeSidecar(docPath, sc, 'preview');
+    assert.strictEqual(mgr.sidecarExists(docPath), false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('writeSidecar fires onDidChange when deleting empty sidecar', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    // Create a sidecar with a thread
+    const sc = emptySidecar('doc.md');
+    mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+
+    // Listen for change event
+    let firedOrigin: string | null = null;
+    let firedDocPath: string | null = null;
+    mgr.onDidChange((e) => {
+      firedOrigin = e.origin;
+      firedDocPath = e.docPath;
+    });
+
+    // Remove all threads and write
+    sc.comments = [];
+    await mgr.writeSidecar(docPath, sc, 'preview');
+
+    assert.strictEqual(firedOrigin, 'preview');
+    assert.strictEqual(firedDocPath, docPath);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('deleteThread + writeSidecar deletes file when last thread removed', async () => {
+    const mgr = makeSidecar();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-test-'));
+    const docPath = path.join(tmpDir, 'doc.md');
+
+    const sc = emptySidecar('doc.md');
+    const thread = mgr.addThread(sc, threadStub());
+    await mgr.writeSidecar(docPath, sc);
+    assert.strictEqual(mgr.sidecarExists(docPath), true);
+
+    // Delete the only thread, then write
+    mgr.deleteThread(sc, thread.id);
+    await mgr.writeSidecar(docPath, sc, 'preview');
+    assert.strictEqual(mgr.sidecarExists(docPath), false);
+
+    // readSidecar should return null
+    const result = await mgr.readSidecar(docPath);
+    assert.strictEqual(result, null);
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
