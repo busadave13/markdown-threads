@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { findSelectionInRawMarkdown } from './utils/markdown';
 import {
   parseSpecitHeader, updateSpecitField,
-  inferSpecitDocType,
+  inferSpecitDocType, specitDocTypeLabel,
   EDITABLE_FIELDS, STATUS_OPTIONS,
 } from './utils/specit';
 
@@ -427,13 +427,15 @@ export class PreviewPanel implements vscode.Disposable {
     const cspSource = this.panel.webview.cspSource;
     const threadsJson = JSON.stringify(threads).replace(/</g, '\\u003c');
     const userJson = JSON.stringify(currentUser).replace(/</g, '\\u003c');
-    const docTitle = path.basename(this.document.uri.fsPath);
+    let docTitle = path.basename(this.document.uri.fsPath);
     const docDirBase = this.docDirUri().toString();
 
     // SPECIT header detection — pass data to WebView JS for in-place replacement
     // SPECIT header detection
     let specitDataJson = 'null';
     let specitStatusRowHtml = '';
+
+    let docSubtitleHtml = '';
 
     const specitHeader = parseSpecitHeader(rawMarkdown);
     if (specitHeader) {
@@ -445,22 +447,31 @@ export class PreviewPanel implements vscode.Disposable {
         statusOptions,
       }).replace(/</g, '\\u003c');
 
-      // Status badge + action buttons for the static doc-header
+      // Override title with Project name when available
+      if (specitHeader.fields['Project']) {
+        docTitle = specitHeader.fields['Project'];
+      }
+
+      // Subtitle with the doc type label
+      const typeLabel = specitDocTypeLabel(docType);
+      if (typeLabel) {
+        docSubtitleHtml = `\n          <p class="doc-subtitle">${escapeHtml(typeLabel)}</p>`;
+      }
+
+      // Status toggle buttons for the static doc-header
       const statusValue = specitHeader.fields['Status'];
       if (statusValue) {
         const normalized = statusValue.toLowerCase();
-        let cssClass: string;
-        switch (normalized) {
-          case 'draft': cssClass = 'specit-status-draft'; break;
-          case 'approved': cssClass = 'specit-status-approved'; break;
-          case 'implemented': cssClass = 'specit-status-implemented'; break;
-          default: cssClass = 'specit-status-unknown'; break;
-        }
         const btns = statusOptions
-          .filter(opt => opt.toLowerCase() !== normalized)
-          .map(opt => `<button class="specit-status-action-btn" data-status="${escapeHtml(opt)}">Set ${escapeHtml(opt)}</button>`)
+          .map(opt => {
+            const optNorm = opt.toLowerCase();
+            const isActive = optNorm === normalized;
+            const colorClass = `specit-status-btn-${optNorm}`;
+            const activeClass = isActive ? 'specit-status-btn-active' : '';
+            return `<button class="specit-status-btn ${colorClass} ${activeClass}" data-status="${escapeHtml(opt)}">${escapeHtml(opt)}</button>`;
+          })
           .join('');
-        specitStatusRowHtml = `\n        <div class="specit-status-row"><span class="specit-status-badge ${cssClass}"><span class="specit-status-dot"></span>${escapeHtml(statusValue)}</span>${btns}</div>`;
+        specitStatusRowHtml = `\n        <div class="specit-status-row">${btns}</div>`;
       }
     }
 
@@ -481,7 +492,7 @@ export class PreviewPanel implements vscode.Disposable {
         <div class="doc-header-row">
           <h1>${escapeHtml(docTitle)}</h1>
           <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
-        </div>${specitStatusRowHtml}
+        </div>${docSubtitleHtml}${specitStatusRowHtml}
       </div>
       <div class="find-bar" id="findBar">
         <input type="text" id="findInput" placeholder="Find in document\u2026" autocomplete="off" />
@@ -673,9 +684,10 @@ const PREVIEW_JS = /* js */ `
   function setupSpecitHeader() {
     if (!specitData) { return; }
 
-    // Wire up status action buttons in the static doc-header
-    document.querySelectorAll('.specit-status-action-btn').forEach(function(btn) {
+    // Wire up status toggle buttons in the static doc-header
+    document.querySelectorAll('.specit-status-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
+        if (btn.classList.contains('specit-status-btn-active')) { return; }
         var newStatus = btn.getAttribute('data-status');
         if (newStatus) {
           vscode.postMessage({ command: 'changeSpecitStatus', newStatus: newStatus });

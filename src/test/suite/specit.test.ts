@@ -6,6 +6,7 @@ import {
   updateSpecitField,
   stripSpecitBlockquote,
   inferSpecitDocType,
+  specitDocTypeLabel,
 } from '../../utils/specit';
 
 suite('SPECIT Utility Test Suite', () => {
@@ -201,6 +202,30 @@ suite('SPECIT Utility Test Suite', () => {
 
     test('returns Other for unknown type', () => {
       assert.strictEqual(inferSpecitDocType(path.join('docs', 'random.md')), 'Other');
+    });
+  });
+
+  // ─── specitDocTypeLabel ───
+
+  suite('specitDocTypeLabel', () => {
+    test('returns full label for PRD', () => {
+      assert.strictEqual(specitDocTypeLabel('PRD'), 'Product Requirements Document');
+    });
+
+    test('returns full label for Architecture', () => {
+      assert.strictEqual(specitDocTypeLabel('Architecture'), 'Architecture Document');
+    });
+
+    test('returns full label for ADR', () => {
+      assert.strictEqual(specitDocTypeLabel('ADR'), 'Architecture Decision Record');
+    });
+
+    test('returns full label for Feature', () => {
+      assert.strictEqual(specitDocTypeLabel('Feature'), 'Feature Spec');
+    });
+
+    test('returns empty string for Other', () => {
+      assert.strictEqual(specitDocTypeLabel('Other'), '');
     });
   });
 });

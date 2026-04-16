@@ -122,6 +122,22 @@ export function stripSpecitBlockquote(rawMarkdown: string, header: SpecitHeader)
   return [...before, ...after].join('\n');
 }
 
+const DOC_TYPE_LABELS: Record<SpecitDocType, string> = {
+  PRD: 'Product Requirements Document',
+  Architecture: 'Architecture Document',
+  ADR: 'Architecture Decision Record',
+  Feature: 'Feature Spec',
+  Other: '',
+};
+
+/**
+ * Return a human-friendly display label for a SPECIT document type.
+ * Returns an empty string for 'Other' (no subtitle warranted).
+ */
+export function specitDocTypeLabel(docType: SpecitDocType): string {
+  return DOC_TYPE_LABELS[docType] ?? '';
+}
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

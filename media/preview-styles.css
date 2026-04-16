@@ -49,6 +49,13 @@ body {
   color: var(--vscode-foreground);
 }
 
+.doc-subtitle {
+  margin: 2px 0 0 0;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.85));
+  font-weight: 400;
+}
+
 .doc-header-row {
   display: flex;
   align-items: center;
@@ -672,51 +679,11 @@ body.resizing {
   flex-wrap: wrap;
 }
 
-.specit-status-badge {
+/* Status toggle buttons — base style (inactive) */
+.specit-status-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 12px;
-  border-radius: 12px;
-  font-size: 0.85em;
-  font-weight: 600;
-}
-
-.specit-status-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.specit-status-draft {
-  background: rgba(255, 183, 77, 0.15);
-  color: #ffb74d;
-}
-.specit-status-draft .specit-status-dot { background: #ffb74d; }
-
-.specit-status-approved {
-  background: rgba(129, 199, 132, 0.15);
-  color: #81c784;
-}
-.specit-status-approved .specit-status-dot { background: #81c784; }
-
-.specit-status-implemented {
-  background: rgba(100, 181, 246, 0.15);
-  color: #64b5f6;
-}
-.specit-status-implemented .specit-status-dot { background: #64b5f6; }
-
-.specit-status-unknown {
-  background: rgba(189, 189, 189, 0.15);
-  color: #bdbdbd;
-}
-.specit-status-unknown .specit-status-dot { background: #bdbdbd; }
-
-.specit-status-action-btn {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 12px;
+  padding: 3px 14px;
   border-radius: 12px;
   font-size: 0.8em;
   font-weight: 600;
@@ -724,10 +691,36 @@ body.resizing {
   cursor: pointer;
   background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.08));
   color: var(--vscode-button-secondaryForeground, inherit);
+  opacity: 0.6;
   transition: all 0.15s ease;
   white-space: nowrap;
 }
 
-.specit-status-action-btn:hover {
+.specit-status-btn:hover {
+  opacity: 0.85;
   background: var(--vscode-button-secondaryHoverBackground, rgba(255,255,255,0.15));
+}
+
+/* Active button — fully colored, not clickable-looking */
+.specit-status-btn.specit-status-btn-active {
+  opacity: 1;
+  cursor: default;
+}
+
+.specit-status-btn-draft.specit-status-btn-active {
+  background: rgba(255, 183, 77, 0.2);
+  color: #ffb74d;
+  border-color: rgba(255, 183, 77, 0.5);
+}
+
+.specit-status-btn-approved.specit-status-btn-active {
+  background: rgba(129, 199, 132, 0.2);
+  color: #81c784;
+  border-color: rgba(129, 199, 132, 0.5);
+}
+
+.specit-status-btn-implemented.specit-status-btn-active {
+  background: rgba(179, 157, 219, 0.2);
+  color: #b39ddb;
+  border-color: rgba(179, 157, 219, 0.5);
 }
