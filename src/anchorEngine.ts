@@ -1,159 +1,164 @@
-import * as vscode from 'vscode';
-import type { MarkdownSection, CommentAnchor, CommentThread } from './models/types';
-import { parseMarkdownSections, findSectionBySlug, findSectionByLine, hasContentDrifted } from './utils/markdown';
+import type { CommentAnchor, CommentThread, MarkdownRange, TextContext } from './models/types';
+
+const CONTEXT_CHARS = 40;
+const SEARCH_WINDOW = 500;
 
 /**
- * Engine for anchoring comments to markdown sections
+ * Engine for anchoring comments to selected text ranges in markdown.
+ * Supports fuzzy re-anchoring when document content has been edited.
  */
 export class AnchorEngine {
-  private sectionCache: Map<string, MarkdownSection[]> = new Map();
 
   /**
-   * Parse and cache sections for a document
+   * Extract surrounding context (~40 chars) from the raw markdown source.
    */
-  parseSections(document: vscode.TextDocument): MarkdownSection[] {
-    const content = document.getText();
-    const sections = parseMarkdownSections(content);
-    this.sectionCache.set(document.uri.toString(), sections);
-    return sections;
+  extractContext(source: string, startOffset: number, endOffset: number): TextContext {
+    const prefix = source.slice(Math.max(0, startOffset - CONTEXT_CHARS), startOffset);
+    const suffix = source.slice(endOffset, endOffset + CONTEXT_CHARS);
+    return { prefix, suffix };
   }
 
   /**
-   * Get cached sections or parse if not cached
+   * Create an anchor from a user's text selection.
    */
-  getSections(document: vscode.TextDocument): MarkdownSection[] {
-    const cached = this.sectionCache.get(document.uri.toString());
-    if (cached) {
-      return cached;
-    }
-    return this.parseSections(document);
-  }
-
-  /**
-   * Clear cache for a document
-   */
-  clearCache(documentUri: string): void {
-    this.sectionCache.delete(documentUri);
-  }
-
-  /**
-   * Create an anchor for a section
-   */
-  createAnchor(section: MarkdownSection): CommentAnchor {
+  createAnchor(
+    selectedText: string,
+    startOffset: number,
+    endOffset: number,
+    rawMarkdown: string,
+  ): CommentAnchor {
     return {
-      sectionSlug: section.slug,
-      contentHash: section.contentHash,
-      lineHint: section.startLine,
+      selectedText,
+      textContext: this.extractContext(rawMarkdown, startOffset, endOffset),
+      markdownRange: { startOffset, endOffset },
     };
   }
 
   /**
-   * Find the section matching an anchor
+   * Try to re-anchor a comment's selected text in the (possibly edited)
+   * markdown source. Returns updated offsets or null if the text can no
+   * longer be located (orphaned).
+   *
+   * Cascading strategy:
+   * 1. Exact match at original offsets
+   * 2. Search near original position (±500 chars)
+   * 3. prefix + text + suffix concatenation
+   * 4. prefix + text  OR  text + suffix
+   * 5. Global exact-text search
    */
-  findAnchoredSection(
-    sections: MarkdownSection[],
-    anchor: CommentAnchor
-  ): { section: MarkdownSection; isStale: boolean } | null {
-    const section = findSectionBySlug(sections, anchor.sectionSlug);
-    
-    if (!section) {
-      return null;
+  anchorComment(anchor: CommentAnchor, currentSource: string): MarkdownRange | null {
+    const { selectedText, textContext, markdownRange } = anchor;
+
+    // Strategy 1: exact match at original offsets
+    if (currentSource.slice(markdownRange.startOffset, markdownRange.endOffset) === selectedText) {
+      return markdownRange;
     }
 
-    const isStale = hasContentDrifted(section, anchor.contentHash);
-    return { section, isStale };
+    // Strategy 2: search near original position (±500 chars) — pick closest match
+    const windowStart = Math.max(0, markdownRange.startOffset - SEARCH_WINDOW);
+    const windowEnd = Math.min(currentSource.length, markdownRange.endOffset + SEARCH_WINDOW);
+    const window = currentSource.slice(windowStart, windowEnd);
+    let bestNearIdx = -1;
+    let bestNearDist = Infinity;
+    let searchFrom = 0;
+    for (;;) {
+      const idx = window.indexOf(selectedText, searchFrom);
+      if (idx === -1) { break; }
+      const absStart = windowStart + idx;
+      const dist = Math.abs(absStart - markdownRange.startOffset);
+      if (dist < bestNearDist) {
+        bestNearDist = dist;
+        bestNearIdx = idx;
+      }
+      searchFrom = idx + 1;
+    }
+    if (bestNearIdx !== -1) {
+      const start = windowStart + bestNearIdx;
+      return { startOffset: start, endOffset: start + selectedText.length };
+    }
+
+    // Strategy 3: search with full context (prefix + text + suffix)
+    const contextPattern = textContext.prefix + selectedText + textContext.suffix;
+    const contextIdx = currentSource.indexOf(contextPattern);
+    if (contextIdx !== -1) {
+      const start = contextIdx + textContext.prefix.length;
+      return { startOffset: start, endOffset: start + selectedText.length };
+    }
+
+    // Strategy 3b: partial context — prefix + text
+    if (textContext.prefix) {
+      const prefixPattern = textContext.prefix + selectedText;
+      const prefixIdx = currentSource.indexOf(prefixPattern);
+      if (prefixIdx !== -1) {
+        const start = prefixIdx + textContext.prefix.length;
+        return { startOffset: start, endOffset: start + selectedText.length };
+      }
+    }
+
+    // Strategy 3c: partial context — text + suffix
+    if (textContext.suffix) {
+      const suffixPattern = selectedText + textContext.suffix;
+      const suffixIdx = currentSource.indexOf(suffixPattern);
+      if (suffixIdx !== -1) {
+        return { startOffset: suffixIdx, endOffset: suffixIdx + selectedText.length };
+      }
+    }
+
+    // Strategy 4: global search for exact text
+    const globalIdx = currentSource.indexOf(selectedText);
+    if (globalIdx !== -1) {
+      return { startOffset: globalIdx, endOffset: globalIdx + selectedText.length };
+    }
+
+    // Could not anchor — thread is orphaned
+    return null;
   }
 
   /**
-   * Get the VS Code Range for a section heading (single line)
-   */
-  getSectionRange(document: vscode.TextDocument, section: MarkdownSection): vscode.Range {
-    return new vscode.Range(
-      new vscode.Position(section.startLine, 0),
-      new vscode.Position(section.startLine, document.lineAt(section.startLine).text.length)
-    );
-  }
-
-  /**
-   * Get the VS Code Range covering the full body of a section
-   * (from heading through last content line).
-   * Used for commenting-range provider so the "+" icon appears on any line.
-   */
-  getSectionBodyRange(document: vscode.TextDocument, section: MarkdownSection): vscode.Range {
-    const lastLine = Math.min(section.endLine - 1, document.lineCount - 1);
-    return new vscode.Range(
-      new vscode.Position(section.startLine, 0),
-      new vscode.Position(lastLine, document.lineAt(lastLine).text.length)
-    );
-  }
-
-  /**
-   * Find the section that contains a given 0-indexed line.
-   */
-  findSectionByLine(sections: MarkdownSection[], line: number): MarkdownSection | undefined {
-    return findSectionByLine(sections, line);
-  }
-
-  /**
-   * Check if any threads have become stale
+   * Detect threads whose anchors have drifted or can no longer be found.
+   * Updates anchors in-place when re-anchoring succeeds at a new offset.
+   * Returns a list of status changes to apply and whether any anchors moved.
    */
   detectStaleThreads(
-    sections: MarkdownSection[],
-    threads: CommentThread[]
-  ): { thread: CommentThread; newStatus: 'stale' | 'open' }[] {
+    currentSource: string,
+    threads: CommentThread[],
+  ): { updates: { thread: CommentThread; newStatus: 'stale' | 'open' }[]; anchorsMoved: boolean } {
     const updates: { thread: CommentThread; newStatus: 'stale' | 'open' }[] = [];
+    let anchorsMoved = false;
 
     for (const thread of threads) {
       if (thread.status === 'resolved') {
-        continue; // Don't change resolved threads
+        continue; // Don't touch resolved threads
       }
 
-      const result = this.findAnchoredSection(sections, thread.anchor);
-      
+      const result = this.anchorComment(thread.anchor, currentSource);
+
       if (!result) {
-        // Section no longer exists - mark as stale
+        // Text can no longer be found → stale / orphaned
         if (thread.status !== 'stale') {
           updates.push({ thread, newStatus: 'stale' });
         }
-      } else if (result.isStale && thread.status !== 'stale') {
-        // Content has drifted
-        updates.push({ thread, newStatus: 'stale' });
-      } else if (!result.isStale && thread.status === 'stale') {
-        // Content matches again (maybe user reverted changes)
-        updates.push({ thread, newStatus: 'open' });
+      } else {
+        // Check if offsets moved
+        if (result.startOffset !== thread.anchor.markdownRange.startOffset ||
+            result.endOffset !== thread.anchor.markdownRange.endOffset) {
+          anchorsMoved = true;
+        }
+
+        // Update anchor offsets and context
+        thread.anchor.markdownRange = result;
+        thread.anchor.textContext = this.extractContext(
+          currentSource, result.startOffset, result.endOffset,
+        );
+
+        if (thread.status === 'stale') {
+          // Successfully re-anchored → open again
+          updates.push({ thread, newStatus: 'open' });
+        }
       }
     }
 
-    return updates;
-  }
-
-  /**
-   * Find a candidate section to reparent an orphaned thread to.
-   * Used when a heading is renamed but the section is still at the same location.
-   * 
-   * Priority:
-   * 1. lineHint matches a section's startLine (heading renamed, same location)
-   * 2. contentHash matches (heading renamed, body unchanged)
-   * 
-   * Returns null if no suitable candidate is found.
-   */
-  findReparentCandidate(
-    sections: MarkdownSection[],
-    anchor: CommentAnchor
-  ): MarkdownSection | null {
-    // Priority 1: lineHint matches a section's startLine
-    const byLine = sections.find(s => s.startLine === anchor.lineHint);
-    if (byLine) {
-      return byLine;
-    }
-
-    // Priority 2: contentHash matches (body is same, heading changed)
-    const byHash = sections.find(s => s.contentHash === anchor.contentHash);
-    if (byHash) {
-      return byHash;
-    }
-
-    return null;
+    return { updates, anchorsMoved };
   }
 }
 

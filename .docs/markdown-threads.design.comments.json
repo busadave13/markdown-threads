@@ -1,0 +1,31 @@
+{
+  "doc": "markdown-threads.design.md",
+  "version": "2.0",
+  "comments": [
+    {
+      "anchor": {
+        "selectedText": "This extension bridges the gap by providing inli",
+        "textContext": {
+          "prefix": " inline comments (messy, no threading)\n\n",
+          "suffix": "ne, threaded comments anchored to specif"
+        },
+        "markdownRange": {
+          "startOffset": 644,
+          "endOffset": 692
+        }
+      },
+      "status": "open",
+      "isDraft": true,
+      "thread": [
+        {
+          "id": "ffeb2a43-e02f-4b20-a8cf-cf8fd93885f9",
+          "author": "Dave Harding",
+          "body": "fdsfds",
+          "created": "2026-04-16T17:55:53.181Z",
+          "edited": null
+        }
+      ],
+      "id": "f66652ad-e1ca-4a25-b882-5f0ec44d6d65"
+    }
+  ]
+}

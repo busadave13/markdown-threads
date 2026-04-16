@@ -13,6 +13,28 @@
         "kind": "build",
         "isDefault": true
       }
+    },
+    {
+      "label": "Build VSIX",
+      "type": "npm",
+      "script": "package",
+      "problemMatcher": "$tsc",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "group": "build"
+    },
+    {
+      "label": "Publish Extension",
+      "type": "shell",
+      "command": "npx @vscode/vsce publish",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "dependsOn": "Build VSIX"
     }
   ]
 }

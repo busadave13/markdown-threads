@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { SidecarFile, CommentThread, CommentEntry, CommentAnchor } from './models/types';
+import type { SidecarFile, CommentThread, CommentEntry } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
 
 /** Origin tag so listeners can ignore their own writes. */
@@ -95,7 +95,7 @@ export class SidecarManager {
   createEmptySidecar(docName: string): SidecarFile {
     return {
       doc: docName,
-      version: '1.0',
+      version: '2.0',
       comments: [],
     };
   }
@@ -238,21 +238,6 @@ export class SidecarManager {
   }
 
   /**
-   * Reparent a thread to a new section anchor.
-   * Used when a heading is renamed but the section still exists.
-   */
-  reparentThread(sidecar: SidecarFile, threadId: string, newAnchor: CommentAnchor): boolean {
-    const thread = sidecar.comments.find(t => t.id === threadId);
-    if (!thread) {
-      return false;
-    }
-    thread.anchor = newAnchor;
-    thread.status = 'open'; // Clear stale/orphaned status
-    thread.isDraft = true;  // Mark as draft since anchor changed
-    return true;
-  }
-
-  /**
    * Validate sidecar file structure
    */
   private validateSidecar(data: unknown): data is SidecarFile {
@@ -265,7 +250,7 @@ export class SidecarManager {
     if (typeof sidecar.doc !== 'string') {
       return false;
     }
-    if (sidecar.version !== '1.0') {
+    if (sidecar.version !== '2.0') {
       return false;
     }
     if (!Array.isArray(sidecar.comments)) {

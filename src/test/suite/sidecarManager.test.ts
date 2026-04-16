@@ -15,17 +15,22 @@ function makeSidecar(): SidecarManager {
 
 /** Helper: build a minimal valid SidecarFile */
 function emptySidecar(doc = 'test.md'): SidecarFile {
-  return { doc, version: '1.0', comments: [] };
+  return { doc, version: '2.0', comments: [] };
+}
+
+/** Helper: build a text-selection anchor */
+function makeAnchor(selectedText = 'important text', startOffset = 50, endOffset = 64) {
+  return {
+    selectedText,
+    textContext: { prefix: 'some prefix context here...', suffix: 'some suffix context here...' },
+    markdownRange: { startOffset, endOffset },
+  };
 }
 
 /** Helper: build a thread stub (Omit<CommentThread, 'id'>) */
 function threadStub(overrides: Partial<Omit<CommentThread, 'id'>> = {}): Omit<CommentThread, 'id'> {
   return {
-    anchor: {
-      sectionSlug: 'introduction',
-      contentHash: 'abc123',
-      lineHint: 0,
-    },
+    anchor: makeAnchor(),
     status: 'open',
     isDraft: true,
     thread: [
@@ -68,7 +73,7 @@ suite('SidecarManager Test Suite', () => {
     const mgr = makeSidecar();
     const sc = mgr.createEmptySidecar('design.md');
     assert.strictEqual(sc.doc, 'design.md');
-    assert.strictEqual(sc.version, '1.0');
+    assert.strictEqual(sc.version, '2.0');
     assert.ok(Array.isArray(sc.comments));
     assert.strictEqual(sc.comments.length, 0);
   });
@@ -82,7 +87,7 @@ suite('SidecarManager Test Suite', () => {
 
     assert.strictEqual(sc.comments.length, 1);
     assert.ok(added.id, 'thread must receive an id');
-    assert.strictEqual(added.anchor.sectionSlug, 'introduction');
+    assert.strictEqual(added.anchor.selectedText, 'important text');
     assert.strictEqual(added.status, 'open');
     assert.strictEqual(added.thread.length, 1);
   });
@@ -91,7 +96,7 @@ suite('SidecarManager Test Suite', () => {
     const mgr = makeSidecar();
     const sc = emptySidecar();
     const t1 = mgr.addThread(sc, threadStub());
-    const t2 = mgr.addThread(sc, threadStub({ anchor: { sectionSlug: 'api', contentHash: 'xyz', lineHint: 10 } }));
+    const t2 = mgr.addThread(sc, threadStub({ anchor: makeAnchor('api endpoint', 100, 112) }));
 
     assert.strictEqual(sc.comments.length, 2);
     assert.notStrictEqual(t1.id, t2.id);
@@ -320,38 +325,7 @@ suite('SidecarManager Test Suite', () => {
     assert.ok(sc.comments.every(t => t.isDraft === false));
   });
 
-  // ── reparentThread ──────────────────────────────────────────────
-
-  test('reparentThread updates anchor and resets status', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    const thread = mgr.addThread(sc, threadStub({
-      anchor: { sectionSlug: 'old-section', contentHash: 'old-hash', lineHint: 5 },
-      status: 'stale',
-      isDraft: false,
-    }));
-
-    const newAnchor = { sectionSlug: 'new-section', contentHash: 'new-hash', lineHint: 10 };
-    const result = mgr.reparentThread(sc, thread.id, newAnchor);
-
-    assert.strictEqual(result, true);
-    assert.strictEqual(sc.comments[0].anchor.sectionSlug, 'new-section');
-    assert.strictEqual(sc.comments[0].anchor.contentHash, 'new-hash');
-    assert.strictEqual(sc.comments[0].anchor.lineHint, 10);
-    assert.strictEqual(sc.comments[0].status, 'open', 'Status should be reset to open');
-    assert.strictEqual(sc.comments[0].isDraft, true, 'Thread should be marked as draft');
-  });
-
-  test('reparentThread returns false for unknown thread', () => {
-    const mgr = makeSidecar();
-    const sc = emptySidecar();
-    mgr.addThread(sc, threadStub());
-
-    const newAnchor = { sectionSlug: 'new-section', contentHash: 'new-hash', lineHint: 10 };
-    const result = mgr.reparentThread(sc, 'nonexistent-id', newAnchor);
-
-    assert.strictEqual(result, false);
-  });
+  // ── (reparentThread removed — no longer relevant with text-based anchoring) ──
 
   // ── File I/O round-trip ──────────────────────────────────────────
 
@@ -371,9 +345,9 @@ suite('SidecarManager Test Suite', () => {
     const loaded = await mgr.readSidecar(docPath);
     assert.ok(loaded);
     assert.strictEqual(loaded!.doc, 'design.md');
-    assert.strictEqual(loaded!.version, '1.0');
+    assert.strictEqual(loaded!.version, '2.0');
     assert.strictEqual(loaded!.comments.length, 1);
-    assert.strictEqual(loaded!.comments[0].anchor.sectionSlug, 'introduction');
+    assert.strictEqual(loaded!.comments[0].anchor.selectedText, 'important text');
 
     // Cleanup
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -419,7 +393,7 @@ suite('SidecarManager Test Suite', () => {
     const docPath = path.join(tmpDir, 'doc.md');
     const sidecarPath = mgr.getSidecarPath(docPath);
 
-    fs.writeFileSync(sidecarPath, JSON.stringify({ doc: 'doc.md', version: '2.0', comments: [] }), 'utf-8');
+    fs.writeFileSync(sidecarPath, JSON.stringify({ doc: 'doc.md', version: '3.0', comments: [] }), 'utf-8');
 
     const result = await mgr.readSidecar(docPath);
     assert.strictEqual(result, null);
