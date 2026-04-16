@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0 — Major Refactor & New Features
+
+- **Text highlighting comments** — Select and highlight a group of text to attach a comment directly to it
+- **Improved Mermaid rendering** — Enhanced mermaid diagram support with zoom and pan capabilities
+- **Fixed link handling** — Links now open in the VS Code integrated browser
+- **Configurable folder exclusions** — `markdownThreads.excludeFolders` setting to hide markdown files from specified folders in the sidebar
+- **Client-side markdown rendering** — Switched to CDN-based rendering for improved consistency
+- **Sticky document header** — Title bar with refresh button stays visible while scrolling
+- **Find in document** — Ctrl+F / Cmd+F search within rendered documents
+- **Checkbox rendering** — Task lists render as styled checkboxes
+- **Extension bundling** — esbuild single-file bundle (VSIX reduced from 4164 files to 13)
+- **Visual refresh** — Improved typography, code blocks, tables, and blockquotes
+
 ## 0.2.2 — Exclude Folders & Enhanced Reading Pane
 
 - **Configurable folder exclusions** — New `markdownThreads.excludeFolders` setting to hide markdown files from specified folders (e.g., `node_modules`, `.github`, `.git`, `out`, `dist`, `bin`, `obj`, `.vscode`) in the Markdown Files sidebar. The tree view and folder filter picker both respect the setting. Changes take effect immediately.
