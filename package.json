@@ -71,6 +71,7 @@
       "properties": {
         "markdownThreads.excludeFolders": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -89,6 +90,7 @@
         },
         "markdownThreads.enableSpecitRendering": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Enable SPECIT document rendering (header card, status buttons, inline field editing). When disabled, SPECIT documents render as plain markdown."
         }
