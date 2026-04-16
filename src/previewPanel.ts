@@ -10,6 +10,7 @@ import { findSelectionInRawMarkdown } from './utils/markdown';
 import {
   parseSpecitHeader, updateSpecitField,
   inferSpecitDocType, specitDocTypeLabel,
+  resolveInternalDocLink,
   EDITABLE_FIELDS, STATUS_OPTIONS,
 } from './utils/specit';
 
@@ -28,6 +29,11 @@ export class PreviewPanel implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private updateTimeout: ReturnType<typeof setTimeout> | undefined;
   private _isUpdating = false;
+  /** Temporarily suppress follow-active-editor after internal doc navigation */
+  private _suppressFollowEditor = false;
+  private _suppressFollowTimeout: ReturnType<typeof setTimeout> | undefined;
+  /** Navigation history stack for back-button support */
+  private _navHistory: vscode.Uri[] = [];
   private readonly styleUri: vscode.Uri;
   private readonly markdownItUri: vscode.Uri;
   private readonly docDirUri: () => vscode.Uri;
@@ -129,6 +135,7 @@ export class PreviewPanel implements vscode.Disposable {
     // switching away when the user clicks a comment widget.
     this.disposables.push(
       vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (this._suppressFollowEditor) { return; }
         if (
           editor &&
           editor.document.languageId === 'markdown' &&
@@ -315,6 +322,71 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
 
+      case 'openInternalDoc': {
+        const relativePath = msg.relativePath as string;
+        if (!relativePath) { return; }
+
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(this.document.uri);
+        if (!workspaceFolder) {
+          vscode.window.showWarningMessage('Cannot navigate: document is not in a workspace.');
+          return;
+        }
+
+        const resolved = resolveInternalDocLink(
+          this.document.uri.fsPath,
+          relativePath,
+          workspaceFolder.uri.fsPath,
+        );
+        if (!resolved) {
+          vscode.window.showWarningMessage('Cannot open link: target is not a valid markdown file within the workspace.');
+          return;
+        }
+
+        try {
+          const targetUri = vscode.Uri.file(resolved.filePath);
+          const targetDoc = await vscode.workspace.openTextDocument(targetUri);
+
+          // Push current document onto navigation history before switching
+          this._navHistory.push(this.document.uri);
+
+          // Suppress follow-editor briefly so the preview doesn't snap back
+          this._suppressFollowEditor = true;
+          if (this._suppressFollowTimeout) { clearTimeout(this._suppressFollowTimeout); }
+          this._suppressFollowTimeout = setTimeout(() => { this._suppressFollowEditor = false; }, 2000);
+
+          this.document = targetDoc;
+          this.panel.title = `Preview: ${path.basename(targetDoc.uri.fsPath)}`;
+          await this.update();
+
+          // Scroll to fragment if present
+          if (resolved.fragment) {
+            this.panel.webview.postMessage({ command: 'scrollToFragment', fragment: resolved.fragment });
+          }
+        } catch {
+          vscode.window.showWarningMessage(`Cannot open document: file not found.`);
+        }
+        break;
+      }
+
+      case 'navigateBack': {
+        if (this._navHistory.length === 0) { return; }
+        const previousUri = this._navHistory.pop()!;
+        try {
+          const previousDoc = await vscode.workspace.openTextDocument(previousUri);
+
+          this._suppressFollowEditor = true;
+          if (this._suppressFollowTimeout) { clearTimeout(this._suppressFollowTimeout); }
+          this._suppressFollowTimeout = setTimeout(() => { this._suppressFollowEditor = false; }, 2000);
+
+          this.document = previousDoc;
+          this.panel.title = `Preview: ${path.basename(previousDoc.uri.fsPath)}`;
+          await this.update();
+        } catch {
+          vscode.window.showWarningMessage('Cannot navigate back: previous document is no longer available.');
+        }
+        break;
+      }
+
       case 'editSpecitField': {
         await this.ensureDocumentFresh();
         const fieldName = msg.fieldName as string;
@@ -491,7 +563,10 @@ export class PreviewPanel implements vscode.Disposable {
       <div class="doc-header">
         <div class="doc-header-row">
           <h1>${escapeHtml(docTitle)}</h1>
-          <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
+          <div class="doc-header-actions">
+            <button class="back-btn" id="backBtn" title="Go back to previous document" style="display:${this._navHistory.length > 0 ? 'inline-flex' : 'none'}">&#x2190; Back</button>
+            <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
+          </div>
         </div>${docSubtitleHtml}${specitStatusRowHtml}
       </div>
       <div class="find-bar" id="findBar">
@@ -667,6 +742,23 @@ const PREVIEW_JS = /* js */ `
       }
     });
 
+    // Mark relative .md links as internal document links for in-preview navigation
+    document.querySelectorAll('#content a[href]').forEach(function(a) {
+      var href = a.getAttribute('href');
+      if (!href || href === '#') { return; }
+      // Skip already-handled external links, anchors, and special protocols
+      if (a.hasAttribute('data-external-url')) { return; }
+      if (/^(?:https?|data|vscode-|mailto):/i.test(href)) { return; }
+      if (href.charAt(0) === '#') { return; }
+      // Check if the link targets a .md file (with optional #fragment)
+      var filePart = href.split('#')[0];
+      if (filePart && /\\.md$/i.test(filePart)) {
+        a.setAttribute('data-internal-doc', href);
+        a.setAttribute('href', '#');
+        a.classList.add('internal-doc-link');
+      }
+    });
+
     // Initialize mermaid
     if (typeof mermaid !== 'undefined') {
       var isDark = document.body.classList.contains('vscode-dark') ||
@@ -679,6 +771,17 @@ const PREVIEW_JS = /* js */ `
     }
   }
   renderMarkdown();
+
+  // ── handle messages from extension host (e.g., scrollToFragment) ──
+  window.addEventListener('message', function(event) {
+    var msg = event.data;
+    if (msg && msg.command === 'scrollToFragment' && msg.fragment) {
+      var target = document.getElementById(msg.fragment);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  });
 
   // ── SPECIT: wire up status buttons in static header + blockquote field card ──
   function setupSpecitHeader() {
@@ -776,6 +879,14 @@ const PREVIEW_JS = /* js */ `
     vscode.postMessage({ command: 'refresh' });
   });
 
+  // ── back button ───────────────────────────
+  var backBtn = document.getElementById('backBtn');
+  if (backBtn) {
+    backBtn.addEventListener('click', function() {
+      vscode.postMessage({ command: 'navigateBack' });
+    });
+  }
+
   // ── highlight color palette ────────────────
   const HIGHLIGHT_COLORS = [
     'rgba(255, 235, 59, 0.35)',
@@ -791,10 +902,18 @@ const PREVIEW_JS = /* js */ `
     return HIGHLIGHT_COLORS[index % HIGHLIGHT_COLORS.length];
   }
 
-  // ── external link handling ─────────────────
+  // ── link handling (external + internal docs) ─────────────────
   contentEl.addEventListener('click', function(e) {
     var anchor = e.target.closest('a');
     if (!anchor) { return; }
+    // Internal document link — navigate preview to linked .md file
+    var internalDoc = anchor.getAttribute('data-internal-doc');
+    if (internalDoc) {
+      e.preventDefault();
+      vscode.postMessage({ command: 'openInternalDoc', relativePath: internalDoc });
+      return;
+    }
+    // External URL — open in simple browser
     var externalUrl = anchor.getAttribute('data-external-url');
     if (externalUrl) {
       e.preventDefault();
