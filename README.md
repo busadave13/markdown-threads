@@ -6,16 +6,16 @@ Inline review comments on markdown files in VS Code, stored in Git alongside you
 
 ## Features
 
-- **Threaded comments** anchored to highlighted text — reply, edit, delete, 👍 react, resolve/reopen.
-- **Smart anchoring** survives edits via surrounding-context matching; flags stale threads when the highlighted text changes and lets you reparent orphans when content is removed.
-- **Side-by-side preview** with rendered markdown (incl. Mermaid) and a comment sidebar; counts shown next to each thread.
+- **Threaded comments** anchored to highlighted text — reply, edit, delete.
+- **Smart anchoring** survives edits via surrounding-context matching; flags stale comments when the highlighted text changes and lets you reparent orphans when content is removed.
+- **Side-by-side preview** with rendered markdown (incl. Mermaid) and a comment sidebar; counts shown next to each comment.
 - **`.comments.json` sidecar** stored next to each doc — fully version-controlled, travels with branches and merges.
 - **Activity Bar sidebar** lists all workspace markdown files with comment counts and a folder filter.
 
 ## Quick Start
 
 1. Right-click any `.md` file → **Markdown: Review and Comment** (or open from the sidebar).
-2. In the preview, **highlight a span of text** and click the 💬 prompt that appears to start a thread.
+2. In the preview, **highlight a span of text** and click the 💬 prompt that appears to start a comment.
 
 ## Configuration
 
