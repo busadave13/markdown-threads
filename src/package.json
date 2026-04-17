@@ -2,7 +2,7 @@
   "name": "markdown-review-and-comment",
   "displayName": "Markdown: Review & Comment",
   "description": "Inline feedback and comments on markdown files stored in Git",
-  "version": "1.0.3",
+  "version": "1.0.1",
   "publisher": "busa-dave-13",
   "license": "MIT",
   "icon": "media/markdown-review-comment-icon.png",
