@@ -5,7 +5,7 @@ const watch = process.argv.includes('--watch');
 
 /** @type {import('esbuild').BuildOptions} */
 const buildOptions = {
-  entryPoints: ['src/extension.ts'],
+  entryPoints: ['extension.ts'],
   bundle: true,
   outfile: 'dist/extension.js',
   external: ['vscode'],

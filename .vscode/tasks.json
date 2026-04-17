@@ -3,8 +3,11 @@
   "tasks": [
     {
       "label": "esbuild-watch",
-      "type": "npm",
-      "script": "esbuild-watch",
+      "type": "shell",
+      "command": "npm run esbuild-watch",
+      "options": {
+        "cwd": "${workspaceFolder}/src"
+      },
       "isBackground": true,
       "problemMatcher": "$esbuild-watch",
       "presentation": {
@@ -17,8 +20,11 @@
     },
     {
       "label": "tsc-watch",
-      "type": "npm",
-      "script": "watch",
+      "type": "shell",
+      "command": "npm run watch",
+      "options": {
+        "cwd": "${workspaceFolder}/src"
+      },
       "problemMatcher": "$tsc-watch",
       "isBackground": true,
       "presentation": {
@@ -29,7 +35,10 @@
     {
       "label": "Build VSIX",
       "type": "shell",
-      "command": "Remove-Item -Force *.vsix -ErrorAction SilentlyContinue; npx @vscode/vsce package",
+      "command": "npm version patch --no-git-tag-version --allow-same-version; Remove-Item -Force ${workspaceFolder}/*.vsix -ErrorAction SilentlyContinue; npx @vscode/vsce package --out ${workspaceFolder}/",
+      "options": {
+        "cwd": "${workspaceFolder}/src"
+      },
       "problemMatcher": "$tsc",
       "presentation": {
         "reveal": "always",
@@ -39,3 +48,4 @@
     }
   ]
 }
+

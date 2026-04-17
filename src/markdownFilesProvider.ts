@@ -42,14 +42,115 @@ export class FolderItem extends vscode.TreeItem {
     public readonly label: string,
     public readonly folderPath: string,
     public readonly children: (MarkdownFileItem | FolderItem)[],
+    relativePath?: string,
   ) {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
     this.contextValue = 'folder';
     this.iconPath = vscode.ThemeIcon.Folder;
+    this.tooltip = relativePath ?? folderPath;
   }
 }
 
 type TreeItem = MarkdownFileItem | FolderItem;
+
+/**
+ * Represents a node in the intermediate nested-tree structure produced by
+ * {@link buildNestedTree}. This is a plain data structure (no VS Code types)
+ * so it can be unit-tested without mocking the editor APIs.
+ */
+export interface NestedFolderNode<T = unknown> {
+  kind: 'folder';
+  /** Leaf segment, e.g. "Mockery". */
+  name: string;
+  /** Full relative path from workspace root, using the platform separator. */
+  relativePath: string;
+  children: NestedNode<T>[];
+}
+
+export interface NestedFileNode<T = unknown> {
+  kind: 'file';
+  /** File name, e.g. "PRD.md". */
+  name: string;
+  /** Full relative path from workspace root, using the platform separator. */
+  relativePath: string;
+  payload: T;
+}
+
+export type NestedNode<T = unknown> = NestedFolderNode<T> | NestedFileNode<T>;
+
+export interface NestedEntry<T = unknown> {
+  /** Relative path from workspace root, using the platform separator. */
+  relativePath: string;
+  payload: T;
+}
+
+/**
+ * Builds a nested folder tree from a flat list of file entries. Pure helper —
+ * does not touch VS Code APIs, so it is safe to unit-test directly.
+ *
+ * Sorting at every level: folders first (alphabetical, case-insensitive), then
+ * files (alphabetical, case-insensitive).
+ */
+export function buildNestedTree<T>(entries: NestedEntry<T>[]): NestedNode<T>[] {
+  const root: NestedFolderNode<T> = {
+    kind: 'folder',
+    name: '',
+    relativePath: '',
+    children: [],
+  };
+
+  for (const entry of entries) {
+    const normalized = entry.relativePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (normalized.length === 0) {
+      continue;
+    }
+    const parts = normalized.split('/');
+    const fileName = parts.pop()!;
+
+    let current = root;
+    const accumulated: string[] = [];
+    for (const segment of parts) {
+      accumulated.push(segment);
+      let next = current.children.find(
+        (c): c is NestedFolderNode<T> => c.kind === 'folder' && c.name === segment,
+      );
+      if (!next) {
+        next = {
+          kind: 'folder',
+          name: segment,
+          relativePath: accumulated.join(path.sep),
+          children: [],
+        };
+        current.children.push(next);
+      }
+      current = next;
+    }
+
+    current.children.push({
+      kind: 'file',
+      name: fileName,
+      relativePath: parts.length === 0 ? fileName : [...parts, fileName].join(path.sep),
+      payload: entry.payload,
+    });
+  }
+
+  sortNodes(root);
+  return root.children;
+}
+
+function sortNodes<T>(node: NestedFolderNode<T>): void {
+  node.children.sort((a, b) => {
+    if (a.kind !== b.kind) {
+      return a.kind === 'folder' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+  for (const child of node.children) {
+    if (child.kind === 'folder') {
+      sortNodes(child);
+    }
+  }
+}
 
 /**
  * Builds a glob exclude pattern from an array of folder names.
@@ -211,49 +312,37 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
   }
 
   private async buildTree(files: vscode.Uri[]): Promise<TreeItem[]> {
-    // Group files by their relative directory
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
-    const folderMap = new Map<string, vscode.Uri[]>();
 
-    for (const file of files) {
-      const relativePath = path.relative(workspaceRoot, file.fsPath);
-      const dir = path.dirname(relativePath);
-      const folder = dir === '.' ? '' : dir;
+    // Resolve comment counts in parallel and build flat entry list.
+    const entries: NestedEntry<{ uri: vscode.Uri; commentCount: number }>[] = await Promise.all(
+      files.map(async file => ({
+        relativePath: path.relative(workspaceRoot, file.fsPath),
+        payload: {
+          uri: file,
+          commentCount: await this.getCommentCount(file.fsPath),
+        },
+      })),
+    );
 
-      if (!folderMap.has(folder)) {
-        folderMap.set(folder, []);
-      }
-      folderMap.get(folder)!.push(file);
+    const nested = buildNestedTree(entries);
+    return nested.map(node => this.toTreeItem(node, workspaceRoot));
+  }
+
+  private toTreeItem(
+    node: NestedNode<{ uri: vscode.Uri; commentCount: number }>,
+    workspaceRoot: string,
+  ): TreeItem {
+    if (node.kind === 'file') {
+      return new MarkdownFileItem(node.name, node.payload.uri, node.payload.commentCount);
     }
-
-    // Sort folders
-    const sortedFolders = Array.from(folderMap.keys()).sort();
-
-    const result: TreeItem[] = [];
-
-    for (const folder of sortedFolders) {
-      const folderFiles = folderMap.get(folder)!;
-
-      // Sort files by name
-      folderFiles.sort((a, b) => path.basename(a.fsPath).localeCompare(path.basename(b.fsPath)));
-
-      // Create file items
-      const fileItems: MarkdownFileItem[] = [];
-      for (const file of folderFiles) {
-        const commentCount = await this.getCommentCount(file.fsPath);
-        fileItems.push(new MarkdownFileItem(path.basename(file.fsPath), file, commentCount));
-      }
-
-      if (folder === '') {
-        // Root-level files
-        result.push(...fileItems);
-      } else {
-        // Files in a subfolder
-        result.push(new FolderItem(folder, path.join(workspaceRoot, folder), fileItems));
-      }
-    }
-
-    return result;
+    const children = node.children.map(child => this.toTreeItem(child, workspaceRoot));
+    return new FolderItem(
+      node.name,
+      path.join(workspaceRoot, node.relativePath),
+      children,
+      node.relativePath,
+    );
   }
 
   private async getCommentCount(filePath: string): Promise<number> {

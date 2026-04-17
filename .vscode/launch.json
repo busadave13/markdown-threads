@@ -6,10 +6,10 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "${workspaceFolder}/..",
-        "--extensionDevelopmentPath=${workspaceFolder}"
+        "${workspaceFolder}",
+        "--extensionDevelopmentPath=${workspaceFolder}/src"
       ],
-      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "outFiles": ["${workspaceFolder}/src/dist/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
     },
     {
@@ -17,11 +17,12 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
-        "--extensionTestsPath=${workspaceFolder}/out/test/suite/index"
+        "--extensionDevelopmentPath=${workspaceFolder}/src",
+        "--extensionTestsPath=${workspaceFolder}/src/out/test/suite/index"
       ],
-      "outFiles": ["${workspaceFolder}/out/test/**/*.js"],
+      "outFiles": ["${workspaceFolder}/src/out/test/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
     }
   ]
 }
+
