@@ -129,7 +129,8 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint . --ext ts",
     "test": "node ./out/test/runTest.js",
-    "package": "npm run esbuild-production && vsce package"
+    "sync-docs": "node -e \"['README.md','CHANGELOG.md'].forEach(f=>require('fs').copyFileSync(require('path').join('..',f),f))\"",
+    "package": "npm run sync-docs && npm run esbuild-production && vsce package"
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",

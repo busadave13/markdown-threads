@@ -4,3 +4,7 @@ node_modules/
 .vscode-test/
 *.vsix
 .DS_Store
+
+# Marketplace docs are copied from repo root into src/ at package time
+src/README.md
+src/CHANGELOG.md
