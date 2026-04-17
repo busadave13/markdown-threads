@@ -1223,25 +1223,6 @@ const PREVIEW_JS = /* js */ `
     block.className = 'comment-thread-block ' + status;
     block.dataset.threadId = thread.id;
 
-    // Highlighted text excerpt
-    var excerpt = document.createElement('div');
-    excerpt.className = 'thread-excerpt';
-    excerpt.style.borderLeftColor = color;
-    var excerptText = thread.selectedText.length > 60 ? thread.selectedText.substring(0, 60) + '\\u2026' : thread.selectedText;
-    excerpt.textContent = '\\u201C' + excerptText + '\\u201D';
-    excerpt.addEventListener('click', function(e) {
-      e.stopPropagation();
-      // Scroll to the highlight in the content
-      var marks = contentEl.querySelectorAll('.comment-highlight[data-thread-id="' + thread.id + '"]');
-      if (marks.length > 0) {
-        marks[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-        contentEl.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
-        marks.forEach(function(m) { m.classList.add('active'); });
-        setTimeout(function() { marks.forEach(function(m) { m.classList.remove('active'); }); }, 2000);
-      }
-    });
-    block.appendChild(excerpt);
-
     // Status label (only shown for stale threads)
     var statusLabel = document.createElement('div');
     statusLabel.className = 'thread-status-label ' + status;
@@ -1250,8 +1231,8 @@ const PREVIEW_JS = /* js */ `
       statusText.textContent = '\\u26A0 Text Changed';
       statusLabel.appendChild(statusText);
     }
-
-    block.appendChild(statusLabel);
+    // statusLabel is appended after the entries (below) so the
+    // author + timestamp header sits at the very top of the card.
 
     // Comment entries
     var entryElements = [];
@@ -1351,10 +1332,27 @@ const PREVIEW_JS = /* js */ `
       entryElements.forEach(function(el) { block.appendChild(el); });
     }
 
-    // Auto-expand on click
-    block.addEventListener('click', function() {
-      if (block.dataset.collapsible === 'true' && !block.classList.contains('focused')) {
-        expandThread(block);
+    // Card click → scroll reading pane to the corresponding highlight.
+    // Ignore clicks that originate inside interactive children so action
+    // buttons, reply/edit forms, reactions, etc. keep working.
+    block.addEventListener('click', function(e) {
+      var target = e.target;
+      if (target && target.closest && (
+        target.closest('button') ||
+        target.closest('a') ||
+        target.closest('textarea') ||
+        target.closest('input') ||
+        target.closest('.comment-form') ||
+        target.closest('.collapsed-divider')
+      )) {
+        return;
+      }
+      var marks = contentEl.querySelectorAll('.comment-highlight[data-thread-id="' + thread.id + '"]');
+      if (marks.length > 0) {
+        marks[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        contentEl.querySelectorAll('.comment-highlight.active').forEach(function(m) { m.classList.remove('active'); });
+        marks.forEach(function(m) { m.classList.add('active'); });
+        setTimeout(function() { marks.forEach(function(m) { m.classList.remove('active'); }); }, 2000);
       }
     });
 
@@ -1391,6 +1389,7 @@ const PREVIEW_JS = /* js */ `
       actionsBar.appendChild(deleteThreadLink);
     }
 
+    block.appendChild(statusLabel);
     block.appendChild(actionsBar);
     sidebarContent.appendChild(block);
   });

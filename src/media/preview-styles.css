@@ -422,11 +422,11 @@ body.resizing {
   margin-top: 4px;
 }
 
-.comment-header { display: flex; flex-direction: column; gap: 1px; margin-bottom: 2px; }
+.comment-header { display: flex; flex-direction: column; gap: 1px; margin-bottom: 14px; }
 .comment-author { font-weight: 600; font-size: 12px; color: var(--vscode-textLink-foreground); }
 .comment-time   { font-size: 11px; color: var(--vscode-descriptionForeground); }
 
-.comment-body { font-size: 13px; line-height: 1.5; margin-top: 2px; white-space: pre-wrap; }
+.comment-body { font-size: 13px; line-height: 1.5; margin-top: 0; white-space: pre-wrap; }
 
 /* ── comment form ──────────────────────────── */
 
