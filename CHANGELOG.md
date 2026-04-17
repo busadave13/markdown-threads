@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- **Preview opens in active editor group** — Opening the Markdown Threads preview now adds it as a tab in the currently active editor group instead of forcing a side-by-side split. Existing preview panels are revealed in the column they currently live in, so user-moved tabs stay put.
+- **Renamed extension** — Display name changed from "Markdown Threads" to "Markdown: Review & Comment". Package id is now `busa-dave-13.markdown-review-and-comment` (previously `busa-dave-13.markdown-threads`); the marketplace treats this as a new extension, so existing installs will not auto-upgrade. Command ids are now `markdownReview.openPreview` / `markdownReview.refreshFiles` / `markdownReview.selectFolder`, the activity-bar view container moved from `markdownThreads` to `markdownReview`, and the config key is now `markdownReview.excludeFolders`. Users with the old `markdownThreads.excludeFolders` setting will need to re-apply it under the new key.
+- **Preview opens in active editor group** — Opening the Markdown: Review & Comment preview now adds it as a tab in the currently active editor group instead of forcing a side-by-side split. Existing preview panels are revealed in the column they currently live in, so user-moved tabs stay put.
 
 ## 1.0.0 — Major Refactor & New Features
 

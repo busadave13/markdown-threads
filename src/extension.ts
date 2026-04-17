@@ -6,15 +6,15 @@ import { MarkdownFilesProvider } from './markdownFilesProvider';
 let markdownFilesProvider: MarkdownFilesProvider;
 
 export async function activate(context: vscode.ExtensionContext) {
-  console.log('[MarkdownThreads] Extension activating...');
-  console.log('[MarkdownThreads] Workspace folders:', vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath));
+  console.log('[MarkdownReview] Extension activating...');
+  console.log('[MarkdownReview] Workspace folders:', vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath));
 
   // Set extension URI for PreviewPanel to locate bundled resources (e.g., media/)
   PreviewPanel.setExtensionUri(context.extensionUri);
 
   // Create and register the tree view for markdown files
   markdownFilesProvider = new MarkdownFilesProvider();
-  const treeView = vscode.window.createTreeView('markdownThreads.files', {
+  const treeView = vscode.window.createTreeView('markdownReview.files', {
     treeDataProvider: markdownFilesProvider,
     showCollapseAll: true,
   });
@@ -28,9 +28,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Register commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('markdownThreads.refreshFiles', () => markdownFilesProvider.refresh()),
-    vscode.commands.registerCommand('markdownThreads.selectFolder', () => markdownFilesProvider.selectFolder()),
-    vscode.commands.registerCommand('markdownThreads.openPreview', async (uri?: vscode.Uri) => {
+    vscode.commands.registerCommand('markdownReview.refreshFiles', () => markdownFilesProvider.refresh()),
+    vscode.commands.registerCommand('markdownReview.selectFolder', () => markdownFilesProvider.selectFolder()),
+    vscode.commands.registerCommand('markdownReview.openPreview', async (uri?: vscode.Uri) => {
       let document: vscode.TextDocument | undefined;
       if (uri) {
         // Invoked from explorer context menu or tree view — load document without opening an editor
@@ -66,7 +66,7 @@ export async function activate(context: vscode.ExtensionContext) {
   try {
     await gitService.initialize();
   } catch (err) {
-    console.error('[MarkdownThreads] Git initialization failed:', err);
+    console.error('[MarkdownReview] Git initialization failed:', err);
   }
 }
 

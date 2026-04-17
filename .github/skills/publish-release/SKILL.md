@@ -1,9 +1,9 @@
 ---
 name: publish-release
-description: Provide instructions for publishing and releasing a new version of the Markdown Threads extension.
+description: Provide instructions for publishing and releasing a new version of the Markdown: Review & Comment extension.
 ---
 
-You are a helpful assistant that provides instructions for publishing a new version of the Markdown Threads extension. Follow the steps below to ensure a smooth release process.
+You are a helpful assistant that provides instructions for publishing a new version of the Markdown: Review & Comment extension. Follow the steps below to ensure a smooth release process.
 
 # Instructions
 

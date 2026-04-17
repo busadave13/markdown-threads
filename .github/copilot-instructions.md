@@ -1,4 +1,4 @@
-# Copilot Instructions — Markdown Threads Extension
+# Copilot Instructions — Markdown: Review & Comment Extension
 
 ## Project Overview
 
@@ -107,10 +107,10 @@ Avoid mocking VS Code APIs — keep unit tests on pure logic in `utils/`, `model
 ## Conventions
 
 - **Singleton pattern**: Core services export a module-level instance (`export const sidecarManager = new SidecarManager()`) — don't create new instances
-- **Only 2 commands**: `markdownThreads.publishDrafts` and `markdownThreads.openPreview` — registered in `package.json` and `extension.ts`
+- **Only 2 commands**: `markdownReview.publishDrafts` and `markdownReview.openPreview` — registered in `package.json` and `extension.ts`
 - **Explorer context menu** uses `resourceExtname == .md` (not `resourceLangId`) so it works on unopened files
-- **Configuration keys** prefixed `markdownThreads.` (e.g., `autoOpenPR`, `branchPrefix`, `defaultProvider`)
-- **Logging** uses `console.log('[MarkdownThreads] ...')` prefix
+- **Configuration keys** prefixed `markdownReview.` (e.g., `autoOpenPR`, `branchPrefix`, `defaultProvider`)
+- **Logging** uses `console.log('[MarkdownReview] ...')` prefix
 - **Delete by ID**: Use `sidecarManager.deleteCommentById()` (not index-based) for concurrency safety
 - **Edit via sidecarManager**: Use `sidecarManager.editComment()` to update body + set `edited` timestamp — don't mutate entries directly
 - **Reactions via sidecarManager**: Use `sidecarManager.toggleReaction()` — don't mutate `reactions` array directly

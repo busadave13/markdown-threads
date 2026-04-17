@@ -19,7 +19,7 @@ export class MarkdownFileItem extends vscode.TreeItem {
 
     // Click action opens preview
     this.command = {
-      command: 'markdownThreads.openPreview',
+      command: 'markdownReview.openPreview',
       title: 'Open Preview',
       arguments: [uri],
     };
@@ -195,7 +195,7 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
 
     // Refresh tree when exclude folders setting changes
     this.configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('markdownThreads.excludeFolders')) {
+      if (e.affectsConfiguration('markdownReview.excludeFolders')) {
         this.refresh();
       }
     });
@@ -211,7 +211,7 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
     }
 
     // Find all directories containing markdown files
-    const excludeFolders = vscode.workspace.getConfiguration('markdownThreads').get<string[]>('excludeFolders', []);
+    const excludeFolders = vscode.workspace.getConfiguration('markdownReview').get<string[]>('excludeFolders', []);
     const excludePattern = buildExcludePattern(excludeFolders);
     const mdFiles = await vscode.workspace.findFiles('**/*.md', excludePattern);
     const folders = new Set<string>();
@@ -292,7 +292,7 @@ export class MarkdownFilesProvider implements vscode.TreeDataProvider<TreeItem> 
       : '**/*.md';
 
     // Find markdown files (filtered by folder if selected, excluding configured folders)
-    const excludeFolders = vscode.workspace.getConfiguration('markdownThreads').get<string[]>('excludeFolders', []);
+    const excludeFolders = vscode.workspace.getConfiguration('markdownReview').get<string[]>('excludeFolders', []);
     const excludePattern = buildExcludePattern(excludeFolders);
     let mdFiles = await vscode.workspace.findFiles(searchPattern, excludePattern);
 

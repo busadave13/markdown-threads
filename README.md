@@ -1,8 +1,8 @@
-# Markdown Threads
+# Markdown: Review & Comment
 
 **Review and comment on markdown files directly in VS Code** — no more switching to Google Docs or losing context in PR comments. Threads are stored alongside your docs in Git and can be published as pull requests with one click.
 
-![Markdown Threads screenshot](https://raw.githubusercontent.com/busadave13/markdown-threads/main/.images/screen.png)
+![Markdown: Review & Comment screenshot](https://raw.githubusercontent.com/busadave13/markdown-threads/main/src/.images/screen.png)
 
 ## ✨ Features
 
@@ -56,9 +56,9 @@ This "docs as code" approach means:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `markdownThreads.autoOpenPR` | `true` | Open browser after PR creation |
-| `markdownThreads.branchPrefix` | `"doc-comment"` | Prefix for comment branches |
-| `markdownThreads.defaultProvider` | `"auto"` | Git provider (`auto`, `github`, `azuredevops`) |
+| `markdownReview.autoOpenPR` | `true` | Open browser after PR creation |
+| `markdownReview.branchPrefix` | `"doc-comment"` | Prefix for comment branches |
+| `markdownReview.defaultProvider` | `"auto"` | Git provider (`auto`, `github`, `azuredevops`) |
 
 ## 🔗 Anchoring & Reparenting
 

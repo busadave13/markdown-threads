@@ -1,11 +1,11 @@
 {
-  "name": "markdown-threads",
-  "displayName": "Markdown Threads",
+  "name": "markdown-review-and-comment",
+  "displayName": "Markdown: Review & Comment",
   "description": "Inline feedback and comments on markdown files stored in Git",
-  "version": "1.0.7",
+  "version": "1.0.3",
   "publisher": "busa-dave-13",
   "license": "MIT",
-  "icon": "media/markdown-threads-icon.png",
+  "icon": "media/markdown-review-comment-icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/busadave13/markdown-threads"
@@ -24,52 +24,52 @@
   ],
   "activationEvents": [
     "onLanguage:markdown",
-    "onCommand:markdownThreads.openPreview",
-    "onView:markdownThreads.files"
+    "onCommand:markdownReview.openPreview",
+    "onView:markdownReview.files"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "markdownThreads",
-          "title": "Markdown Threads",
+          "id": "markdownReview",
+          "title": "Markdown: Review & Comment",
           "icon": "media/sidebar-icon.svg"
         }
       ]
     },
     "views": {
-      "markdownThreads": [
+      "markdownReview": [
         {
-          "id": "markdownThreads.files",
+          "id": "markdownReview.files",
           "name": "Markdown Files"
         }
       ]
     },
     "commands": [
       {
-        "command": "markdownThreads.openPreview",
+        "command": "markdownReview.openPreview",
         "title": "Markdown: Review and Comment",
-        "category": "Markdown Threads",
+        "category": "Markdown: Review & Comment",
         "icon": "$(open-preview)"
       },
       {
-        "command": "markdownThreads.refreshFiles",
+        "command": "markdownReview.refreshFiles",
         "title": "Refresh",
-        "category": "Markdown Threads",
+        "category": "Markdown: Review & Comment",
         "icon": "$(refresh)"
       },
       {
-        "command": "markdownThreads.selectFolder",
+        "command": "markdownReview.selectFolder",
         "title": "Filter by Folder",
-        "category": "Markdown Threads",
+        "category": "Markdown: Review & Comment",
         "icon": "$(folder)"
       }
     ],
     "configuration": {
-      "title": "Markdown Threads",
+      "title": "Markdown: Review & Comment",
       "properties": {
-        "markdownThreads.excludeFolders": {
+        "markdownReview.excludeFolders": {
           "type": "array",
           "scope": "resource",
           "items": {
@@ -93,27 +93,27 @@
     "menus": {
       "editor/title": [
         {
-          "command": "markdownThreads.openPreview",
+          "command": "markdownReview.openPreview",
           "when": "resourceLangId == markdown",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
-          "command": "markdownThreads.openPreview",
+          "command": "markdownReview.openPreview",
           "when": "resourceExtname == .md",
           "group": "navigation"
         }
       ],
       "view/title": [
         {
-          "command": "markdownThreads.selectFolder",
-          "when": "view == markdownThreads.files",
+          "command": "markdownReview.selectFolder",
+          "when": "view == markdownReview.files",
           "group": "navigation@1"
         },
         {
-          "command": "markdownThreads.refreshFiles",
-          "when": "view == markdownThreads.files",
+          "command": "markdownReview.refreshFiles",
+          "when": "view == markdownReview.files",
           "group": "navigation@2"
         }
       ]

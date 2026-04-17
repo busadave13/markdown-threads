@@ -14,7 +14,7 @@ import { resolveInternalDocLink } from './utils/docLinks';
  * with inline comment threads visible — a "preview with comments" mode.
  */
 export class PreviewPanel implements vscode.Disposable {
-  public static readonly viewType = 'markdownThreads.preview';
+  public static readonly viewType = 'markdownReview.preview';
 
   private static instance: PreviewPanel | undefined;
   private static extensionUri: vscode.Uri | undefined;
