@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Preview opens in active editor group** — Opening the Markdown Threads preview now adds it as a tab in the currently active editor group instead of forcing a side-by-side split. Existing preview panels are revealed in the column they currently live in, so user-moved tabs stay put.
+
 ## 1.0.0 — Major Refactor & New Features
 
 - **Text highlighting comments** — Select and highlight a group of text to attach a comment directly to it

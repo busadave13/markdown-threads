@@ -42,16 +42,19 @@ export class PreviewPanel implements vscode.Disposable {
 
   /** Create a new preview panel or reveal an existing one. */
   public static async show(document: vscode.TextDocument): Promise<void> {
-    // When an editor is open, open beside it and keep focus on the editor.
-    // When no editor is open, open in the main column and let the panel take focus
-    // so the webview renderer activates reliably.
-    const hasEditor = vscode.window.activeTextEditor !== undefined;
-    const viewColumn = hasEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.One;
-    const preserveFocus = hasEditor;
+    // Open the preview as a tab in the active editor group so it takes the
+    // full editor area instead of forcing a split. The webview takes focus
+    // on first creation so its renderer activates reliably.
+    const viewColumn = vscode.ViewColumn.Active;
+    const preserveFocus = false;
 
     if (PreviewPanel.instance) {
       PreviewPanel.instance.document = document;
-      PreviewPanel.instance.panel.reveal(viewColumn, preserveFocus);
+      // Reveal in the panel's existing column so a user-moved tab stays put.
+      PreviewPanel.instance.panel.reveal(
+        PreviewPanel.instance.panel.viewColumn,
+        true,
+      );
       await PreviewPanel.instance.update();
       return;
     }
