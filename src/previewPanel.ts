@@ -7,12 +7,7 @@ import { gitService } from './gitService';
 import type { CommentThread as AppCommentThread } from './models/types';
 import { v4 as uuidv4 } from 'uuid';
 import { findSelectionInRawMarkdown } from './utils/markdown';
-import {
-  parseSpecitHeader, updateSpecitField,
-  inferSpecitDocType, specitDocTypeLabel,
-  resolveInternalDocLink,
-  EDITABLE_FIELDS, STATUS_OPTIONS,
-} from './utils/specit';
+import { resolveInternalDocLink } from './utils/docLinks';
 
 /**
  * Manages a WebView panel that renders the markdown document
@@ -387,32 +382,6 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
 
-      case 'editSpecitField': {
-        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
-        if (!specitOn) { return; }
-        await this.ensureDocumentFresh();
-        const fieldName = msg.fieldName as string;
-        const newValue = (msg.newValue as string || '').trim();
-        if (!fieldName || !newValue) { return; }
-        const raw = this.document.getText().replace(/\r\n/g, '\n');
-        const updated = updateSpecitField(raw, fieldName, newValue);
-        if (updated === raw) { return; }
-        await this.replaceDocumentContent(updated);
-        break;
-      }
-
-      case 'changeSpecitStatus': {
-        const specitOn = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
-        if (!specitOn) { return; }
-        await this.ensureDocumentFresh();
-        const newStatus = (msg.newStatus as string || '').trim();
-        if (!newStatus) { return; }
-        const raw = this.document.getText().replace(/\r\n/g, '\n');
-        const updated = updateSpecitField(raw, 'Status', newStatus);
-        if (updated === raw) { return; }
-        await this.replaceDocumentContent(updated);
-        break;
-      }
     }
   }
 
@@ -503,54 +472,8 @@ export class PreviewPanel implements vscode.Disposable {
     const cspSource = this.panel.webview.cspSource;
     const threadsJson = JSON.stringify(threads).replace(/</g, '\\u003c');
     const userJson = JSON.stringify(currentUser).replace(/</g, '\\u003c');
-    let docTitle = path.basename(this.document.uri.fsPath);
+    const docTitle = path.basename(this.document.uri.fsPath);
     const docDirBase = this.docDirUri().toString();
-
-    // SPECIT header detection — pass data to WebView JS for in-place replacement
-    // SPECIT header detection
-    let specitDataJson = 'null';
-    let specitStatusRowHtml = '';
-
-    let docSubtitleHtml = '';
-
-    const specitEnabled = vscode.workspace.getConfiguration('markdownThreads').get<boolean>('enableSpecitRendering', false);
-    const specitHeader = specitEnabled ? parseSpecitHeader(rawMarkdown) : null;
-    if (specitHeader) {
-      const docType = inferSpecitDocType(this.document.uri.fsPath);
-      const statusOptions = STATUS_OPTIONS[docType] ?? STATUS_OPTIONS['Other'];
-      specitDataJson = JSON.stringify({
-        fields: specitHeader.fields,
-        editableFields: [...EDITABLE_FIELDS],
-        statusOptions,
-      }).replace(/</g, '\\u003c');
-
-      // Override title with Project name when available
-      if (specitHeader.fields['Project']) {
-        docTitle = specitHeader.fields['Project'];
-      }
-
-      // Subtitle with the doc type label
-      const typeLabel = specitDocTypeLabel(docType);
-      if (typeLabel) {
-        docSubtitleHtml = `\n          <p class="doc-subtitle">${escapeHtml(typeLabel)}</p>`;
-      }
-
-      // Status toggle buttons for the static doc-header
-      const statusValue = specitHeader.fields['Status'];
-      if (statusValue) {
-        const normalized = statusValue.toLowerCase();
-        const btns = statusOptions
-          .map(opt => {
-            const optNorm = opt.toLowerCase();
-            const isActive = optNorm === normalized;
-            const colorClass = `specit-status-btn-${optNorm}`;
-            const activeClass = isActive ? 'specit-status-btn-active' : '';
-            return `<button class="specit-status-btn ${colorClass} ${activeClass}" data-status="${escapeHtml(opt)}">${escapeHtml(opt)}</button>`;
-          })
-          .join('');
-        specitStatusRowHtml = `\n        <div class="specit-status-row">${btns}</div>`;
-      }
-    }
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -572,7 +495,7 @@ export class PreviewPanel implements vscode.Disposable {
             <button class="back-btn" id="backBtn" title="Go back to previous document" style="display:${this._navHistory.length > 0 ? 'inline-flex' : 'none'}">&#x2190; Back</button>
             <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
           </div>
-        </div>${docSubtitleHtml}${specitStatusRowHtml}
+        </div>
       </div>
       <div class="find-bar" id="findBar">
         <input type="text" id="findInput" placeholder="Find in document\u2026" autocomplete="off" />
@@ -601,7 +524,6 @@ export class PreviewPanel implements vscode.Disposable {
     const currentUser = ${userJson};
     const rawMarkdown = ${JSON.stringify(rawMarkdown)};
     const docDirBase = ${JSON.stringify(docDirBase)};
-    const specitData = ${specitDataJson};
 ${PREVIEW_JS}
   </script>
 </body>
@@ -658,7 +580,6 @@ const PREVIEW_JS = /* js */ `
       // markdown-it not yet loaded — retry after window load
       window.addEventListener('load', function() {
         renderMarkdown();
-        if (typeof setupSpecitHeader === 'function') { setupSpecitHeader(); }
       }, { once: true });
       return;
     }
@@ -787,97 +708,6 @@ const PREVIEW_JS = /* js */ `
       }
     }
   });
-
-  // ── SPECIT: wire up status buttons in static header + blockquote field card ──
-  function setupSpecitHeader() {
-    if (!specitData) { return; }
-
-    // Wire up status toggle buttons in the static doc-header
-    document.querySelectorAll('.specit-status-btn').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        if (btn.classList.contains('specit-status-btn-active')) { return; }
-        var newStatus = btn.getAttribute('data-status');
-        if (newStatus) {
-          vscode.postMessage({ command: 'changeSpecitStatus', newStatus: newStatus });
-        }
-      });
-    });
-
-    // Replace the first blockquote with an interactive fields card
-    var bq = contentEl.querySelector('blockquote');
-    if (!bq) { return; }
-
-    var fields = specitData.fields;
-    var editableFields = specitData.editableFields;
-
-    var fieldsHtml = '';
-    var fieldKeys = Object.keys(fields);
-    for (var fi = 0; fi < fieldKeys.length; fi++) {
-      var key = fieldKeys[fi];
-      var val = fields[key];
-      var isEditable = editableFields.indexOf(key) !== -1;
-      var editBtn = isEditable
-        ? ' <button class="specit-edit-btn" data-field="' + key + '" title="Edit ' + key + '">Edit</button>'
-        : '';
-      fieldsHtml += '<div class="specit-field" data-field-name="' + key + '">'
-        + '<span class="specit-field-label">' + key + ':</span> '
-        + '<span class="specit-field-value">' + val + '</span>' + editBtn
-        + '</div>';
-    }
-
-    var card = document.createElement('div');
-    card.className = 'specit-header-card';
-    card.innerHTML = fieldsHtml;
-    bq.parentNode.replaceChild(card, bq);
-
-    // Wire up inline field editing
-    card.querySelectorAll('.specit-edit-btn').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var fieldName = btn.getAttribute('data-field');
-        if (!fieldName) { return; }
-        var fieldEl = btn.closest('.specit-field');
-        if (!fieldEl) { return; }
-        var valueEl = fieldEl.querySelector('.specit-field-value');
-        if (!valueEl) { return; }
-        if (fieldEl.querySelector('.specit-edit-input')) { return; }
-
-        var currentValue = valueEl.textContent || '';
-        valueEl.style.display = 'none';
-        btn.style.display = 'none';
-
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'specit-edit-input';
-        input.value = currentValue;
-        fieldEl.appendChild(input);
-        input.focus();
-        input.select();
-
-        function commit() {
-          var newValue = input.value.trim();
-          if (newValue && newValue !== currentValue) {
-            vscode.postMessage({ command: 'editSpecitField', fieldName: fieldName, newValue: newValue });
-          } else {
-            cancel();
-          }
-        }
-        function cancel() {
-          input.remove();
-          valueEl.style.display = '';
-          btn.style.display = '';
-        }
-
-        input.addEventListener('keydown', function(e) {
-          if (e.key === 'Enter') { e.preventDefault(); commit(); }
-          if (e.key === 'Escape') { e.preventDefault(); cancel(); }
-        });
-        input.addEventListener('blur', function() {
-          setTimeout(function() { if (document.contains(input)) { commit(); } }, 100);
-        });
-      });
-    });
-  }
-  setupSpecitHeader();
 
   // ── refresh button ─────────────────────────
   document.getElementById('refreshBtn').addEventListener('click', function() {

@@ -1,0 +1,30 @@
+{
+  "doc": "markdown-threads.design.md",
+  "version": "2.0",
+  "comments": [
+    {
+      "anchor": {
+        "selectedText": "omments on the e",
+        "textContext": {
+          "prefix": " (loses version control benefits)\n- PR c",
+          "suffix": "ntire file (no inline anchoring)\n- Manua"
+        },
+        "markdownRange": {
+          "startOffset": 522,
+          "endOffset": 538
+        }
+      },
+      "status": "open",
+      "thread": [
+        {
+          "id": "012f5cf6-fd07-4677-b50b-7b139eb86192",
+          "author": "Dave Harding",
+          "body": "fdsfds",
+          "created": "2026-04-17T22:14:04.466Z",
+          "edited": null
+        }
+      ],
+      "id": "b6f2cbeb-f947-4c1a-9c69-f852180286e8"
+    }
+  ]
+}
