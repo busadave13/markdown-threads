@@ -623,3 +623,35 @@ body.resizing {
   margin: 16px 0;
   text-align: center;
 }
+
+/* ── sidebar toggle button ─────────────────── */
+
+.toggle-sidebar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 14px;
+  border-radius: 12px;
+  font-size: 0.85em;
+  font-weight: 600;
+  border: 1px solid var(--vscode-button-border, rgba(255,255,255,0.15));
+  cursor: pointer;
+  background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.08));
+  color: var(--vscode-button-secondaryForeground, inherit);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.toggle-sidebar-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(255,255,255,0.15));
+}
+
+/* ── sidebar hidden state ──────────────────── */
+
+#layout.sidebar-hidden #sidebar {
+  display: none;
+}
+
+#layout.sidebar-hidden #resize-handle {
+  display: none;
+}

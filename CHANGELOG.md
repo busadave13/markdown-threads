@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3
+
+### Added
+
+- **Show/Hide comments sidebar** — A new ☰ toggle button in the document header lets you collapse the comment sidebar to give the reading pane full width. Click again to bring it back. The visibility state persists across document switches and re-renders within the current session.
+
 ## 1.0.1 — First Official Release as "Markdown: Review & Comment"
 
 This is the first official release of the extension under its new name. Previously published as **Markdown Threads** (`busa-dave-13.markdown-threads`), the extension is now **Markdown: Review & Comment** (`busa-dave-13.markdown-review-and-comment`). The marketplace treats this as a new extension, so existing installs will not auto-upgrade — uninstall the old extension and install the new one to continue receiving updates.

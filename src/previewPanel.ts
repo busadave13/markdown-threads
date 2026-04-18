@@ -29,6 +29,8 @@ export class PreviewPanel implements vscode.Disposable {
   private _suppressFollowTimeout: ReturnType<typeof setTimeout> | undefined;
   /** Navigation history stack for back-button support */
   private _navHistory: vscode.Uri[] = [];
+  /** Whether the comment sidebar is visible (session-level state) */
+  private _sidebarVisible = true;
   private readonly styleUri: vscode.Uri;
   private readonly markdownItUri: vscode.Uri;
   private readonly docDirUri: () => vscode.Uri;
@@ -385,6 +387,11 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
 
+      case 'toggleSidebar': {
+        this._sidebarVisible = !this._sidebarVisible;
+        break;
+      }
+
     }
   }
 
@@ -450,7 +457,7 @@ export class PreviewPanel implements vscode.Disposable {
     const currentUser = await gitService.getUserName();
 
     this.panel.title = `Preview: ${path.basename(this.document.uri.fsPath)}`;
-    this.panel.webview.html = this.buildHtml(rawMarkdown, threadsData, currentUser);
+    this.panel.webview.html = this.buildHtml(rawMarkdown, threadsData, currentUser, this._sidebarVisible);
     } finally {
       this._isUpdating = false;
     }
@@ -470,6 +477,7 @@ export class PreviewPanel implements vscode.Disposable {
       startOffset: number;
     }>,
     currentUser: string,
+    sidebarVisible: boolean,
   ): string {
     const nonce = getNonce();
     const cspSource = this.panel.webview.cspSource;
@@ -489,13 +497,14 @@ export class PreviewPanel implements vscode.Disposable {
   <title>${escapeHtml(docTitle)}</title>
 </head>
 <body>
-  <div id="layout">
+  <div id="layout"${sidebarVisible ? '' : ' class="sidebar-hidden"'}>
     <div id="content-scroll">
       <div class="doc-header">
         <div class="doc-header-row">
           <h1>${escapeHtml(docTitle)}</h1>
           <div class="doc-header-actions">
             <button class="back-btn" id="backBtn" title="Go back to previous document" style="display:${this._navHistory.length > 0 ? 'inline-flex' : 'none'}">&#x2190; Back</button>
+            <button class="toggle-sidebar-btn" id="toggleSidebarBtn" title="${sidebarVisible ? 'Hide comments sidebar' : 'Show comments sidebar'}">${sidebarVisible ? '&#x2630; Hide Comments' : '&#x2630; Show Comments'}</button>
             <button class="refresh-btn" id="refreshBtn" title="Refresh document">&#x21bb; Refresh</button>
           </div>
         </div>
@@ -722,6 +731,18 @@ const PREVIEW_JS = /* js */ `
   if (backBtn) {
     backBtn.addEventListener('click', function() {
       vscode.postMessage({ command: 'navigateBack' });
+    });
+  }
+
+  // ── toggle sidebar button ─────────────────
+  var toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
+  var layout = document.getElementById('layout');
+  if (toggleSidebarBtn && layout) {
+    toggleSidebarBtn.addEventListener('click', function() {
+      var isHidden = layout.classList.toggle('sidebar-hidden');
+      toggleSidebarBtn.innerHTML = isHidden ? '&#x2630; Show Comments' : '&#x2630; Hide Comments';
+      toggleSidebarBtn.title = isHidden ? 'Show comments sidebar' : 'Hide comments sidebar';
+      vscode.postMessage({ command: 'toggleSidebar' });
     });
   }
 
