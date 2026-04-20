@@ -206,12 +206,26 @@ export class PreviewPanel implements vscode.Disposable {
 
         const match = findSelectionInRawMarkdown(selectedText, rawMarkdown, contentOffset);
         if (!match) {
-          vscode.window.showErrorMessage('Could not find selected text in document');
+          const preview = selectedText.length > 80 ? selectedText.slice(0, 80) + '…' : selectedText;
+          console.warn(`[MarkdownReview] addComment: could not anchor selection: "${preview}"`);
+          // Restore the form in the WebView so the user does not lose their typed body.
+          this.panel.webview.postMessage({
+            command: 'restoreNewCommentForm',
+            selectedText,
+            contentOffset,
+            body,
+          });
+          vscode.window.showWarningMessage(
+            'Could not anchor your comment to the selected text. ' +
+            'Try selecting the text again (your draft has been preserved in the sidebar).',
+          );
           return;
         }
 
         const endOffset = match.start + match.text.length;
-        const anchor = anchorEngine.createAnchor(match.text, match.start, endOffset, rawMarkdown);
+        const anchor = anchorEngine.createAnchor(
+          match.text, match.start, endOffset, rawMarkdown, selectedText,
+        );
 
         let sidecar = await sidecarManager.readSidecar(this.document.uri.fsPath);
         if (!sidecar) {
@@ -446,6 +460,7 @@ export class PreviewPanel implements vscode.Disposable {
       return {
         id: t.id,
         selectedText: t.anchor.selectedText,
+        displayText: t.anchor.displayText ?? t.anchor.selectedText,
         occurrenceIndex: sameTextBefore,
         status: t.status,
         color: t.color,
@@ -470,6 +485,7 @@ export class PreviewPanel implements vscode.Disposable {
     threads: Array<{
       id: string;
       selectedText: string;
+      displayText: string;
       occurrenceIndex: number;
       status: string;
       color?: string;
@@ -718,6 +734,12 @@ const PREVIEW_JS = /* js */ `
       if (target) {
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
+    }
+    if (msg && msg.command === 'restoreNewCommentForm') {
+      openNewCommentForm(
+        { text: msg.selectedText, contentOffset: msg.contentOffset || 0 },
+        msg.body || '',
+      );
     }
   });
 
@@ -1068,11 +1090,7 @@ const PREVIEW_JS = /* js */ `
   });
 
   // Toolbar "Comment" button → open form in sidebar
-  toolbarBtn.addEventListener('click', function() {
-    if (!pendingSelection) { return; }
-    const selData = pendingSelection;
-    toolbar.style.display = 'none';
-
+  function openNewCommentForm(selData, initialBody) {
     // Create inline form at the top of sidebar
     const existing = sidebarContent.querySelector('.new-comment-form');
     if (existing) { existing.remove(); }
@@ -1109,7 +1127,18 @@ const PREVIEW_JS = /* js */ `
     }
     wrapper.appendChild(form);
     sidebarContent.insertBefore(wrapper, sidebarContent.firstChild);
+    if (initialBody) { textarea.value = initialBody; }
     textarea.focus();
+    if (initialBody) {
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+  }
+
+  toolbarBtn.addEventListener('click', function() {
+    if (!pendingSelection) { return; }
+    const selData = pendingSelection;
+    toolbar.style.display = 'none';
+    openNewCommentForm(selData, '');
   });
 
   // ── highlight rendering ────────────────────
@@ -1125,8 +1154,40 @@ const PREVIEW_JS = /* js */ `
     // Apply highlights for each thread
     threads.forEach(function(thread, threadIndex) {
       var color = thread.color || getThreadColor(threadIndex);
-      findAndWrapText(thread.selectedText, thread.occurrenceIndex, color, thread.id);
+      // Prefer displayText (rendered selection captured at comment time)
+      // because the raw selectedText may include markdown delimiters that
+      // are not present in the rendered DOM.
+      var search = thread.displayText || thread.selectedText;
+      findAndWrapText(search, thread.occurrenceIndex, color, thread.id);
     });
+  }
+
+  // Collapse runs of whitespace in 's' to a single space, returning the
+  // collapsed string plus a parallel index map back to the original.
+  // mapStart[i] = first original index represented by collapsed char i;
+  // mapEnd[i]   = original index AFTER the last char represented by i.
+  function collapseWs(s) {
+    var out = '';
+    var mapStart = [];
+    var mapEnd = [];
+    var i = 0;
+    while (i < s.length) {
+      var ch = s.charAt(i);
+      if (/\\s/.test(ch)) {
+        var j = i;
+        while (j < s.length && /\\s/.test(s.charAt(j))) { j++; }
+        out += ' ';
+        mapStart.push(i);
+        mapEnd.push(j);
+        i = j;
+      } else {
+        out += ch;
+        mapStart.push(i);
+        mapEnd.push(i + 1);
+        i++;
+      }
+    }
+    return { norm: out, mapStart: mapStart, mapEnd: mapEnd };
   }
 
   function findAndWrapText(searchText, occurrenceIndex, color, threadId) {
@@ -1153,23 +1214,48 @@ const PREVIEW_JS = /* js */ `
       fullText += current.textContent;
     }
 
-    // Find Nth occurrence
+    // ── Pass 1: exact indexOf on the raw concatenated DOM text ──
+    var matchStart = -1;
+    var matchEnd = -1;
     var found = 0;
     var pos = 0;
-    var matchStart = -1;
     while (pos <= fullText.length - searchText.length) {
       var idx = fullText.indexOf(searchText, pos);
       if (idx === -1) { break; }
       if (found === occurrenceIndex) {
         matchStart = idx;
+        matchEnd = idx + searchText.length;
         break;
       }
       found++;
       pos = idx + 1;
     }
 
+    // ── Pass 2: whitespace-tolerant search ──
+    // The DOM concatenation may have different whitespace between block
+    // elements than the captured displayText (e.g., paragraph boundaries
+    // serialize differently). Collapse whitespace runs in both and search
+    // there, then map offsets back to the original DOM string.
+    if (matchStart === -1) {
+      var fullN = collapseWs(fullText);
+      var searchN = searchText.replace(/\\s+/g, ' ').replace(/^ | $/g, '');
+      if (!searchN) { return; }
+      var fnd = 0;
+      var p = 0;
+      while (p <= fullN.norm.length - searchN.length) {
+        var nIdx = fullN.norm.indexOf(searchN, p);
+        if (nIdx === -1) { break; }
+        if (fnd === occurrenceIndex) {
+          matchStart = fullN.mapStart[nIdx];
+          matchEnd = fullN.mapEnd[nIdx + searchN.length - 1];
+          break;
+        }
+        fnd++;
+        p = nIdx + 1;
+      }
+    }
+
     if (matchStart === -1) { return; }
-    var matchEnd = matchStart + searchText.length;
 
     // Find affected text nodes and wrap them
     var affected = [];

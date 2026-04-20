@@ -20,8 +20,15 @@ export interface MarkdownRange {
 
 /** Anchor information for locating a comment within a document */
 export interface CommentAnchor {
-  /** The exact text the user selected */
+  /** The exact text the user selected, as it appears in the raw markdown
+   * source (may include inline markdown delimiters such as `**`). Used by
+   * re-anchoring logic when the document is edited. */
   selectedText: string;
+  /** The text the user selected as it was rendered in the preview WebView
+   * (markdown delimiters stripped, block boundaries collapsed). Used to
+   * locate and highlight the selection in the rendered DOM. Optional for
+   * backward compatibility with anchors created before this field existed. */
+  displayText?: string;
   /** Surrounding context for fuzzy re-anchoring when offsets drift */
   textContext: TextContext;
   /** Character offsets into the raw markdown source */

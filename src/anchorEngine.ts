@@ -20,15 +20,20 @@ export class AnchorEngine {
 
   /**
    * Create an anchor from a user's text selection.
+   *
+   * @param displayText Optional rendered-text version of the selection (with
+   *   inline markdown stripped) for use when highlighting in the preview DOM.
    */
   createAnchor(
     selectedText: string,
     startOffset: number,
     endOffset: number,
     rawMarkdown: string,
+    displayText?: string,
   ): CommentAnchor {
     return {
       selectedText,
+      displayText,
       textContext: this.extractContext(rawMarkdown, startOffset, endOffset),
       markdownRange: { startOffset, endOffset },
     };
